@@ -111,11 +111,7 @@ in
         Restart = "on-failure";
         RestartSec = 10;
       };
-      postStart = ''
-        db="${config.services.navidrome-collector.settings.db_path}"
-        [ -f "$db" ] && ${pkgs.coreutils}/bin/chmod 660 "$db"
-      '';
-
+ 
       environment = {
         NVC_SLSKD_URL = config.services.navidrome-collector.settings.slskd_url;
         NVC_MUSIC_DIR = config.services.navidrome-collector.settings.music_dir;

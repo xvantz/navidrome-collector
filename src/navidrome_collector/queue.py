@@ -57,6 +57,14 @@ class Queue:
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.executescript(SCHEMA)
+            # Ensure DB is group-writable so other users can use CLI
+            try:
+                import os, stat
+                mode = os.stat(self._path).st_mode
+                if not mode & stat.S_IWGRP:
+                    os.chmod(self._path, mode | stat.S_IWGRP)
+            except Exception:
+                pass
         return self._local.conn
 
     def add(self, query: str, artist: str | None = None, title: str | None = None) -> int:
