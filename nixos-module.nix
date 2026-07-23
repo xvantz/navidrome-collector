@@ -100,6 +100,8 @@ in
         User = config.services.navidrome-collector.user;
         Group = config.services.navidrome-collector.group;
         StateDirectory = "navidrome-collector";
+        StateDirectoryMode = "0770";
+        UMask = "0007";
         EnvironmentFile = lib.mkIf (config.services.navidrome-collector.environmentFile != null) (
           if lib.isList config.services.navidrome-collector.environmentFile
           then config.services.navidrome-collector.environmentFile
