@@ -48,7 +48,7 @@
 
           postInstall = ''
             wrapProgram $out/bin/navidrome-collector \
-              --prefix PATH : ${lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
           '';
 
           meta = {
