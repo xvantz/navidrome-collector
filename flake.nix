@@ -33,6 +33,7 @@
           nativeBuildInputs = with pkgs; [
             python.pkgs.setuptools
             python.pkgs.wheel
+            makeWrapper
           ];
 
           propagatedBuildInputs = with python.pkgs; [
@@ -40,10 +41,15 @@
             requests
             pyacoustid
             click
-          ];
+          ] ++ [ pkgs.yt-dlp pkgs.ffmpeg ];
 
           # Tests need chromaprint/slskd — skip for nix build
           doCheck = false;
+
+          postInstall = ''
+            wrapProgram $out/bin/navidrome-collector \
+              --prefix PATH : ${lib.makeBinPath [ pkgs.yt-dlp pkgs.ffmpeg ]}
+          '';
 
           meta = {
             description = "Soulseek-powered music collector for Navidrome";
