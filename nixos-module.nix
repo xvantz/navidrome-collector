@@ -101,7 +101,6 @@ in
         Group = config.services.navidrome-collector.group;
         StateDirectory = "navidrome-collector";
         StateDirectoryMode = "0770";
-        UMask = "0007";
         EnvironmentFile = lib.mkIf (config.services.navidrome-collector.environmentFile != null) (
           if lib.isList config.services.navidrome-collector.environmentFile
           then config.services.navidrome-collector.environmentFile
@@ -112,6 +111,10 @@ in
         Restart = "on-failure";
         RestartSec = 10;
       };
+      postStart = ''
+        db="${config.services.navidrome-collector.settings.db_path}"
+        [ -f "$db" ] && ${pkgs.coreutils}/bin/chmod 660 "$db"
+      '';
 
       environment = {
         NVC_SLSKD_URL = config.services.navidrome-collector.settings.slskd_url;
