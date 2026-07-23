@@ -62,6 +62,12 @@ in
               description = "slskd download directory.";
             };
 
+            ytdlp_dir = lib.mkOption {
+              type = lib.types.path;
+              default = "/var/lib/navidrome-collector/ytdlp";
+              description = "yt-dlp download directory.";
+            };
+
             db_path = lib.mkOption {
               type = lib.types.path;
               default = "/var/lib/navidrome-collector/queue.db";
@@ -116,6 +122,7 @@ in
         NVC_SLSKD_URL = config.services.navidrome-collector.settings.slskd_url;
         NVC_MUSIC_DIR = config.services.navidrome-collector.settings.music_dir;
         NVC_DOWNLOAD_DIR = config.services.navidrome-collector.settings.download_dir;
+        NVC_YTDIR = config.services.navidrome-collector.settings.ytdlp_dir;
         NVC_DB = config.services.navidrome-collector.settings.db_path;
       };
     };

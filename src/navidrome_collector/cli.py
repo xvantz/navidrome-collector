@@ -28,9 +28,11 @@ _DEFAULT_CONFIG = Path("/etc/navidrome-collector/config.yaml")
               help="Navidrome music directory")
 @click.option("--download-dir", default="/var/lib/slskd/downloads", envvar="NVC_DOWNLOAD_DIR",
               help="slskd download directory")
+@click.option("--ytdlp-dir", default=None, envvar="NVC_YTDIR",
+              help="yt-dlp download directory (default: download-dir/ytdlp)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.pass_context
-def cli(ctx, db, slskd_url, slskd_key, music_dir, download_dir, verbose):
+def cli(ctx, db, slskd_url, slskd_key, music_dir, download_dir, ytdlp_dir, verbose):
     """Navidrome Music Collector — Soulseek-powered music downloader."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -44,6 +46,7 @@ def cli(ctx, db, slskd_url, slskd_key, music_dir, download_dir, verbose):
     ctx.obj["slskd"] = SlskdClient(slskd_url, api_key=slskd_key)
     ctx.obj["music_dir"] = Path(music_dir)
     ctx.obj["download_dir"] = Path(download_dir)
+    ctx.obj["ytdlp_dir"] = Path(ytdlp_dir) if ytdlp_dir else None
 
 
 # ── Queue commands ───────────────────────────────────────
@@ -127,6 +130,7 @@ def process(ctx, max_items):
         slskd=slskd,
         music_dir=ctx.obj["music_dir"],
         download_dir=ctx.obj["download_dir"],
+        ytdlp_dir=ctx.obj["ytdlp_dir"],
     )
     stats = collector.process_queue(max_items=max_items)
     click.echo(
@@ -160,6 +164,7 @@ def daemon(ctx, interval, once):
         slskd=slskd,
         music_dir=ctx.obj["music_dir"],
         download_dir=ctx.obj["download_dir"],
+        ytdlp_dir=ctx.obj["ytdlp_dir"],
     )
 
     send_message("🎵 Navidrome Collector started")
