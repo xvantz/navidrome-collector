@@ -30,9 +30,12 @@
           src = ./.;
           pyproject = true;
 
+          build-system = with python.pkgs; [
+            setuptools
+            wheel
+          ];
+
           nativeBuildInputs = with pkgs; [
-            python.pkgs.setuptools
-            python.pkgs.wheel
             makeWrapper
           ];
 
@@ -41,7 +44,7 @@
             requests
             pyacoustid
             click
-          ] ++ [ pkgs.yt-dlp pkgs.ffmpeg ];
+          ];
 
           # Tests need chromaprint/slskd — skip for nix build
           doCheck = false;
