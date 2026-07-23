@@ -119,9 +119,9 @@ in
       };
     };
 
-    # Grant collector access to slskd download dir and navidrome music dir
+    # Grant collector access to slskd download dir
     systemd.tmpfiles.rules = [
-      "d ${config.services.navidrome-collector.settings.db_path} 0750 ${defaultUser} ${defaultUser} - -"
+      "d /var/lib/slskd/downloads 0750 ${defaultUser} slskd - -"
     ];
   };
 
