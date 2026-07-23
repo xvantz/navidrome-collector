@@ -9,9 +9,9 @@ import click
 from . import __version__
 from .queue import Queue
 from .slskd_client import SlskdClient
-from .collector import Collector
 
 log = logging.getLogger(__name__)
+from .collector import Collector
 
 _DEFAULT_CONFIG = Path("/etc/navidrome-collector/config.yaml")
 
@@ -134,6 +134,61 @@ def process(ctx, max_items):
         f"{stats['succeeded']} succeeded, "
         f"{stats['failed']} failed."
     )
+
+
+# ── Daemon ─────────────────────────────────────────────
+
+@cli.command()
+@click.option("--interval", "-i", default=30, type=int,
+              help="Polling interval in seconds")
+@click.option("--once", is_flag=True,
+              help="Process queue once and exit (same as `process`)")
+@click.pass_context
+def daemon(ctx, interval, once):
+    """Run continuously, monitoring and processing the queue."""
+    import time
+    from .collector import Collector
+    from .notifier import send_message
+
+    slskd = ctx.obj["slskd"]
+    if not slskd.ping():
+        click.echo("slskd is not reachable.", err=True)
+        raise SystemExit(1)
+
+    collector = Collector(
+        queue=ctx.obj["queue"],
+        slskd=slskd,
+        music_dir=ctx.obj["music_dir"],
+        download_dir=ctx.obj["download_dir"],
+    )
+
+    send_message("🎵 Navidrome Collector started")
+
+    if once:
+        stats = collector.process_queue()
+        click.echo(f"Done: {stats['succeeded']} ok, {stats['failed']} failed")
+        return
+
+    click.echo(f"Daemon mode: polling every {interval}s (Ctrl+C to stop)")
+    while True:
+        try:
+            stats = collector.process_queue()
+            if stats["succeeded"]:
+                send_message(f"✅ Downloaded {stats['succeeded']} track(s)")
+            if stats["failed"]:
+                send_message(f"❌ {stats['failed']} download(s) failed")
+            # Check and report active downloads
+            downloads = slskd.get_downloads()
+            active = [d for d in downloads if "Queued" in d.state or "InProgress" in d.state or "Requested" in d.state]
+            if active:
+                for d in active[:3]:
+                    name = d.filename.split("\\")[-1].split("/")[-1][:40]
+                    pct = f"{d.bytes_downloaded}/{d.size}KB" if d.size else "waiting"
+                    log.info("  %s: %s — %s", d.username, name, pct)
+        except Exception as e:
+            log.exception("Daemon error: %s", e)
+
+        time.sleep(interval)
 
 
 # ── Info ──────────────────────────────────────────────────

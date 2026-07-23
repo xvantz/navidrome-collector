@@ -36,8 +36,10 @@ in
         default = null;
         description = ''
           Path to environment file with secrets (NVC_SLSKD_KEY, etc.).
-          Required variables:
+          Available variables:
           - NVC_SLSKD_KEY: slskd API key
+          - NVC_TELEGRAM_TOKEN: Telegram bot token (optional)
+          - NVC_TELEGRAM_CHAT_IDS: comma-separated chat IDs (optional)
         '';
       };
 
