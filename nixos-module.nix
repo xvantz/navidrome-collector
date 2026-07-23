@@ -35,16 +35,16 @@ in
         type = lib.types.nullOr lib.types.path;
         default = null;
         description = ''
-          Path to environment file with secrets (NVC_SLSKD_KEY, etc.).
+          Path to environment file with secrets.
           Available variables:
           - NVC_SLSKD_KEY: slskd API key
           - NVC_TELEGRAM_TOKEN: Telegram bot token (optional)
-          - NVC_TELEGRAM_CHAT_IDS: comma-separated chat IDs (optional)
+          - NVC_TELEGRAM_CHAT_IDS: comma-separated Telegram chat IDs (optional)
         '';
       };
+    };
 
-      settings = lib.mkOption {
-        description = "Application configuration.";
+    settings = lib.mkOption {
         default = { };
         type = lib.types.submodule {
           freeformType = settingsFormat.type;
@@ -96,20 +96,22 @@ in
     };
 
     systemd.services.navidrome-collector = {
-      description = "Navidrome Music Collector — Soulseek-powered downloader";
+      description = "Navidrome Music Collector daemon";
       after = [ "network.target" "slskd.service" "navidrome.service" ];
       wants = [ "slskd.service" ];
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = {
-        Type = "oneshot";
+        Type = "simple";
         User = config.services.navidrome-collector.user;
         Group = config.services.navidrome-collector.group;
         StateDirectory = "navidrome-collector";
         EnvironmentFile = lib.mkIf (config.services.navidrome-collector.environmentFile != null)
           config.services.navidrome-collector.environmentFile;
-        ExecStart = lib.getExe config.services.navidrome-collector.package;
+        ExecStart = "${lib.getExe config.services.navidrome-collector.package} daemon";
         SupplementaryGroups = [ "slskd" ];
+        Restart = "on-failure";
+        RestartSec = 10;
       };
 
       environment = {
@@ -117,19 +119,6 @@ in
         NVC_MUSIC_DIR = config.services.navidrome-collector.settings.music_dir;
         NVC_DOWNLOAD_DIR = config.services.navidrome-collector.settings.download_dir;
         NVC_DB = config.services.navidrome-collector.settings.db_path;
-      };
-    };
-
-    # Timer to process queue periodically
-    systemd.timers.navidrome-collector = {
-      description = "Periodic Navidrome Music Collection";
-      partOf = [ "navidrome-collector.service" ];
-      wantedBy = [ "timers.target" ];
-
-      timerConfig = {
-        OnCalendar = "hourly";
-        Persistent = true;
-        RandomizedDelaySec = 300;
       };
     };
 
