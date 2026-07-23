@@ -127,6 +127,5 @@ in
 
   meta = {
     maintainers = with lib.maintainers; [ xvantz ];
-    description = "NixOS module for Navidrome Music Collector";
   };
 }
