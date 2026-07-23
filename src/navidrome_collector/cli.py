@@ -175,23 +175,28 @@ def daemon(ctx, interval, once):
         return
 
     click.echo(f"Daemon mode: polling every {interval}s (Ctrl+C to stop)")
+    last_process = 0
     while True:
+        now = time.time()
         try:
-            stats = collector.process_queue()
-            if stats["succeeded"]:
-                send_message(f"✅ Downloaded {stats['succeeded']} track(s)")
-            if stats["failed"]:
-                send_message(f"❌ {stats['failed']} download(s) failed")
-            # Check and report active downloads
-            downloads = slskd.get_downloads()
-            active = [d for d in downloads if "Queued" in d.state or "InProgress" in d.state or "Requested" in d.state]
-            if active:
-                for d in active[:3]:
-                    name = d.filename.split("\\")[-1].split("/")[-1][:40]
-                    pct = f"{d.bytes_downloaded}/{d.size}KB" if d.size else "waiting"
-                    log.info("  %s: %s — %s", d.username, name, pct)
+            # Process queue every N seconds
+            if now - last_process >= interval:
+                stats = collector.process_queue()
+                if stats["succeeded"]:
+                    send_message(f"✅ Downloaded {stats['succeeded']} track(s)")
+                if stats["failed"]:
+                    send_message(f"❌ {stats['failed']} download(s) failed")
+                # Check and report active downloads
+                downloads = slskd.get_downloads()
+                active = [d for d in downloads if "Queued" in d.state or "InProgress" in d.state or "Requested" in d.state]
+                if active:
+                    for d in active[:3]:
+                        name = d.filename.split("\\")[-1].split("/")[-1][:40]
+                        pct = f"{d.bytes_downloaded}/{d.size}KB" if d.size else "waiting"
+                        log.info("  %s: %s — %s", d.username, name, pct)
+                last_process = now
 
-            # Listen for Telegram commands
+            # Always listen for Telegram commands (fast polling)
             try:
                 from .notifier import listen_and_handle
                 handled = listen_and_handle(
@@ -206,7 +211,7 @@ def daemon(ctx, interval, once):
         except Exception as e:
             log.exception("Daemon error: %s", e)
 
-        time.sleep(interval)
+        time.sleep(2)  # fast tick for Telegram responsiveness
 
 
 # ── Info ──────────────────────────────────────────────────
