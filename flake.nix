@@ -73,7 +73,7 @@
       }
     ) // {
       # NixOS module (cross-platform, not per-system)
-      nixosModules.default = import ./nixos-module.nix self;
-      nixosModules.navidrome-collector = import ./nixos-module.nix self;
+      nixosModules.default = import ./nixos-module.nix;
+      nixosModules.navidrome-collector = import ./nixos-module.nix;
     };
 }
