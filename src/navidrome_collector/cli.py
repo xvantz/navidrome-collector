@@ -190,6 +190,19 @@ def daemon(ctx, interval, once):
                     name = d.filename.split("\\")[-1].split("/")[-1][:40]
                     pct = f"{d.bytes_downloaded}/{d.size}KB" if d.size else "waiting"
                     log.info("  %s: %s — %s", d.username, name, pct)
+
+            # Listen for Telegram commands
+            try:
+                from .notifier import listen_and_handle
+                handled = listen_and_handle(
+                    lambda q: collector.queue.add(q),
+                    lambda: collector.queue.list_items(),
+                )
+                if handled:
+                    log.info("Handled %d Telegram command(s)", handled)
+            except Exception:
+                pass
+
         except Exception as e:
             log.exception("Daemon error: %s", e)
 
