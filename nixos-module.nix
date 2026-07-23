@@ -1,10 +1,4 @@
-{ ... }:
-{
-  lib,
-  pkgs,
-  config,
-  ...
-}:
+{ lib, pkgs, config, ... }:
 
 let
   settingsFormat = pkgs.formats.yaml { };
