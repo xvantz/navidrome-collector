@@ -73,7 +73,7 @@ class Collector:
 
             stats["processed"] += 1
             try:
-                result = self._start_downloads(item.query)
+                result, enqueued = self._start_downloads(item.query)
                 if result is True:
                     self.queue.mark_done(item.id, "")
                     stats["succeeded"] += 1
@@ -82,7 +82,7 @@ class Collector:
                     stats["failed"] += 1
                 else:
                     # result is False = enqueued, waiting for later check
-                    self.queue.mark_processing(item.id, [])
+                    self.queue.mark_processing(item.id, enqueued)
                     # don't count in processed/failed — it's pending
                     stats["processed"] -= 1
             except Exception as e:
@@ -92,26 +92,26 @@ class Collector:
 
         return stats
 
-    def _start_downloads(self, query: str) -> Optional[bool]:
+    def _start_downloads(self, query: str) -> tuple[Optional[bool], list]:
         """yt-dlp first (instant), then try Soulseek in background.
 
         Returns:
-            True  → download complete (file organised)
-            False → Soulseek enqueued, waiting
-            None  → nothing found at all
+            (True, [])  → download complete (file organised)
+            (False, enqueued) → Soulseek enqueued, waiting
+            (None, [])  → nothing found at all
         """
         # Step 1: yt-dlp — always works, gives instant result
         yt = self._ytdlp_fallback(query)
         if yt:
-            return True
+            return (True, [])
 
         # Step 2: Soulseek — try to find FLAC/320kbps
         files = self.slskd.search(query)
         if not files:
-            return None
+            return (None, [])
 
         files.sort(key=lambda f: self._score(f), reverse=True)
-        enqueued = []
+        enqueued: list[tuple[str, str]] = []
 
         for chosen in files:
             if len(enqueued) >= _MAX_PARALLEL:
@@ -127,13 +127,13 @@ class Collector:
                 if completed:
                     result = organize_file(completed, self.music_dir)
                     if result:
-                        return True
+                        return (True, [])
 
         if enqueued:
             log.info("Soulseek: enqueued %d candidates for: %s", len(enqueued), query)
-            return False
+            return (False, enqueued)
 
-        return None
+        return (None, [])
 
     def _check_downloads(self, item) -> Optional[Path]:
         """Check if any previously enqueued download completed."""
@@ -174,9 +174,19 @@ class Collector:
             return None  # still processing
 
         if all_failed:
-            # All downloads failed — mark item to try yt-dlp
-            log.warning("All downloads failed, trying yt-dlp")
-            item.query  # re-use the original query
+            log.warning("All Soulseek downloads failed, trying yt-dlp")
+            # Try yt-dlp now instead of waiting for re-queue
+            return organize_file(self._ytdlp_download(item), self.music_dir) if item else None
+
+    def _ytdlp_download(self, item) -> Optional[Path]:
+        """Try to download a single item via yt-dlp."""
+        if not self.ytdlp_fallback:
+            return None
+        try:
+            from .ytdlp_downloader import search_and_download
+            return search_and_download(item.query, self.ytdlp_dir)
+        except Exception as e:
+            log.warning("yt-dlp failed for %s: %s", item.query, e)
             return None
 
     def _ytdlp_fallback(self, query: str) -> Optional[bool]:
