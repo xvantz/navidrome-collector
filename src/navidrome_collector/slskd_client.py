@@ -107,10 +107,12 @@ class SlskdClient:
 
     # ── Downloads ───────────────────────────────────────────
 
-    def enqueue(self, username: str, filename: str) -> str | None:
+    def enqueue(self, username: str, filename: str, size: int = 0) -> str | None:
         """Enqueue a file for download. Returns download id or None."""
-        payload = [{"filename": filename}]
-        resp = self._post(f"/transfers/downloads/{username}", payload)
+        payload = {"filename": filename}
+        if size > 0:
+            payload["size"] = size
+        resp = self._post(f"/transfers/downloads/{username}", [payload])
         if resp.status_code in (200, 201):
             data = resp.json() if resp.content else {}
             if isinstance(data, list) and data:

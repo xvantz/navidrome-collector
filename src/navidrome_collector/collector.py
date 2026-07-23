@@ -119,7 +119,7 @@ class Collector:
             if chosen.size == 0 or chosen.bitrate == 0:
                 continue
 
-            dl_id = self.slskd.enqueue(chosen.username, chosen.filename)
+            dl_id = self.slskd.enqueue(chosen.username, chosen.filename, chosen.size)
             if dl_id:
                 enqueued.append((chosen.username, chosen.filename))
             else:
