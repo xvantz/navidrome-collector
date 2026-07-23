@@ -93,17 +93,22 @@ class Collector:
         return stats
 
     def _start_downloads(self, query: str) -> Optional[bool]:
-        """Search and enqueue top candidates (non-blocking).
+        """yt-dlp first (instant), then try Soulseek in background.
 
         Returns:
-            True  → download already complete (file organised)
-            False → enqueued, waiting (mark as processing)
-            None  → nothing found
+            True  → download complete (file organised)
+            False → Soulseek enqueued, waiting
+            None  → nothing found at all
         """
+        # Step 1: yt-dlp — always works, gives instant result
+        yt = self._ytdlp_fallback(query)
+        if yt:
+            return True
+
+        # Step 2: Soulseek — try to find FLAC/320kbps
         files = self.slskd.search(query)
         if not files:
-            log.warning("No results for: %s", query)
-            return self._ytdlp_fallback(query)
+            return None
 
         files.sort(key=lambda f: self._score(f), reverse=True)
         enqueued = []
@@ -114,12 +119,10 @@ class Collector:
             if chosen.size == 0 or chosen.bitrate == 0:
                 continue
 
-            log.info("Enqueue: %s from %s (%.0f kbps)", chosen.filename, chosen.username, chosen.bitrate)
             dl_id = self.slskd.enqueue(chosen.username, chosen.filename)
             if dl_id:
                 enqueued.append((chosen.username, chosen.filename))
             else:
-                # Check if already completed
                 completed = self._find_completed(chosen)
                 if completed:
                     result = organize_file(completed, self.music_dir)
@@ -127,11 +130,10 @@ class Collector:
                         return True
 
         if enqueued:
-            log.info("Enqueued %d candidates for: %s", len(enqueued), query)
-            return False  # processing, check later
+            log.info("Soulseek: enqueued %d candidates for: %s", len(enqueued), query)
+            return False
 
-        # Nothing worked → yt-dlp fallback
-        return self._ytdlp_fallback(query)
+        return None
 
     def _check_downloads(self, item) -> Optional[Path]:
         """Check if any previously enqueued download completed."""
