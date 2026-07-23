@@ -32,19 +32,19 @@ in
       };
 
       environmentFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
+        type = lib.types.nullOr (lib.types.either lib.types.path (lib.types.listOf lib.types.path));
         default = null;
         description = ''
-          Path to environment file with secrets.
+          Path or list of paths to environment files with secrets.
           Available variables:
           - NVC_SLSKD_KEY: slskd API key
           - NVC_TELEGRAM_TOKEN: Telegram bot token (optional)
           - NVC_TELEGRAM_CHAT_IDS: comma-separated Telegram chat IDs (optional)
         '';
+        example = lib.literalExpression "[ \"/run/secrets/nvc-common.env\" \"/run/secrets/nvc-telegram.env\" ]";
       };
-    };
 
-    settings = lib.mkOption {
+      settings = lib.mkOption {
         default = { };
         type = lib.types.submodule {
           freeformType = settingsFormat.type;
@@ -106,8 +106,11 @@ in
         User = config.services.navidrome-collector.user;
         Group = config.services.navidrome-collector.group;
         StateDirectory = "navidrome-collector";
-        EnvironmentFile = lib.mkIf (config.services.navidrome-collector.environmentFile != null)
-          config.services.navidrome-collector.environmentFile;
+        EnvironmentFile = lib.mkIf (config.services.navidrome-collector.environmentFile != null) (
+          if lib.isList config.services.navidrome-collector.environmentFile
+          then config.services.navidrome-collector.environmentFile
+          else [ config.services.navidrome-collector.environmentFile ]
+        );
         ExecStart = "${lib.getExe config.services.navidrome-collector.package} daemon";
         SupplementaryGroups = [ "slskd" ];
         Restart = "on-failure";
