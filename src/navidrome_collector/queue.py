@@ -57,12 +57,14 @@ class Queue:
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.executescript(SCHEMA)
-            # Ensure DB is group-writable so other users can use CLI
+            # Ensure DB files are group-writable so other users can use CLI
             try:
                 import os, stat
-                mode = os.stat(self._path).st_mode
-                if not mode & stat.S_IWGRP:
-                    os.chmod(self._path, mode | stat.S_IWGRP)
+                for f in [self._path, Path(str(self._path) + "-shm"), Path(str(self._path) + "-wal")]:
+                    if f.exists():
+                        mode = os.stat(f).st_mode
+                        if not mode & stat.S_IWGRP:
+                            os.chmod(f, mode | stat.S_IWGRP)
             except Exception:
                 pass
         return self._local.conn
