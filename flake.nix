@@ -72,8 +72,13 @@
         };
       }
     ) // {
-      # NixOS module (cross-platform, not per-system)
-      nixosModules.default = import ./nixos-module.nix;
-      nixosModules.navidrome-collector = import ./nixos-module.nix;
+      # NixOS module — wraps the module with an overlay so pkgs.navidrome-collector exists
+      nixosModules.default = { pkgs, ... }: {
+        nixpkgs.overlays = [ (final: prev: {
+          navidrome-collector = self.packages.${pkgs.system}.default;
+        })];
+        imports = [ ./nixos-module.nix ];
+      };
+      nixosModules.navidrome-collector = self.nixosModules.default;
     };
 }
