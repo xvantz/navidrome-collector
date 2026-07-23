@@ -20,7 +20,6 @@ def queue():
 @pytest.fixture
 def slskd():
     client = MagicMock()
-    # By default, slskd is reachable
     client.ping.return_value = True
     return client
 
@@ -32,6 +31,7 @@ def collector(queue, slskd):
         slskd=slskd,
         music_dir=Path("/tmp/music"),
         download_dir=Path("/tmp/downloads"),
+        ytdlp_fallback=False,  # don't try yt-dlp in tests
     )
 
 
@@ -111,38 +111,65 @@ class TestProcessQueue:
         slskd.search.return_value = []
 
         stats = collector.process_queue()
-        assert stats["processed"] == 1
         assert stats["failed"] == 1
 
         item = collector.queue.get(1)
         assert item.status == "failed"
 
-    def test_full_pipeline_success(self, collector, slskd):
+    def test_full_pipeline_nonblocking(self, collector, slskd):
+        """New non-blocking flow: enqueue → processing, then check later."""
         collector.queue.add("Test Artist - Test Song")
 
-        # Mock slskd responses
         slskd.search.return_value = [
             SlskdFile(filename="test_song.mp3", size=5_000_000, bitrate=320,
                       duration=200, sample_rate=44100, username="soulseeker",
                       slot_free=True),
         ]
         slskd.enqueue.return_value = "dl-1"
-        slskd.wait_for_download.return_value = SlskdDownload(
-            id="dl-1", filename="test_song.mp3", size=5_000_000,
-            bytes_downloaded=5_000_000, state="Completed",
-            username="soulseeker",
-        )
 
-        # Mock _find_local to return a fake file
+        # First run: enqueue
+        stats = collector.process_queue()
+        assert stats["processed"] == 0  # enqueued, not counted
+        assert stats["succeeded"] == 0
+
+        # Item should be in "processing" state
+        item = collector.queue.get(1)
+        assert item.status == "processing"
+
+    def test_full_pipeline_check_complete(self, collector, slskd):
+        """On second run: check processing downloads, find completed."""
+        # Setup: item already in processing state
+        item_id = collector.queue.add("Track")
+        collector.queue.mark_processing(item_id, [
+            ("soulseeker", "test_song.mp3"),
+        ])
+
+        # Mock download state
+        slskd.get_downloads.return_value = [
+            SlskdDownload(
+                id="dl-1", filename="test_song.mp3", size=5_000_000,
+                bytes_downloaded=5_000_000, state="Completed",
+                username="soulseeker",
+            ),
+        ]
+
+        # Mock find_local_path to return a real file
         with tempfile.TemporaryDirectory() as tmp:
-            fake_file = Path(tmp) / "test_song.mp3"
-            fake_file.write_bytes(b"\x00" * 1000)
+            fake = Path(tmp) / "test_song.mp3"
+            fake.write_bytes(b"\x00" * 100)
+            slskd.get_downloads.return_value = [
+                SlskdDownload(
+                    id="dl-1", filename="test_song.mp3", size=5_000_000,
+                    bytes_downloaded=5_000_000, state="Completed",
+                    username="soulseeker",
+                ),
+            ]
 
-            # We need to patch find_local but also the organize function
-            with patch.object(collector, "_find_local", return_value=fake_file):
+            with patch.object(collector, "_find_local_path", return_value=fake):
                 with patch("navidrome_collector.collector.organize_file",
-                           return_value=Path("/srv/music/Test_Artist/Album/test_song.mp3")):
+                           return_value=Path("/srv/music/Artist/Album/track.mp3")):
                     stats = collector.process_queue()
 
-        assert stats["processed"] == 1
         assert stats["succeeded"] == 1
+        item = collector.queue.get(item_id)
+        assert item.status == "done"

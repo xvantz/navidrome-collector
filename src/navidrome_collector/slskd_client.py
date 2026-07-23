@@ -130,7 +130,22 @@ class SlskdClient:
         data = resp.json() if resp.ok and resp.content else []
         if not isinstance(data, list):
             return []
-        downloads = [self._as_download(d) for d in data]
+        # Flatten the nested structure: username → directories → files
+        downloads = []
+        for user_entry in data:
+            username = user_entry.get("username", "")
+            for dir_entry in user_entry.get("directories", []):
+                for f in dir_entry.get("files", []):
+                    d = SlskdDownload(
+                        id=f.get("id", ""),
+                        filename=f.get("filename", ""),
+                        size=f.get("size", 0),
+                        bytes_downloaded=f.get("bytesTransferred", 0),
+                        state=f.get("state", "Unknown"),
+                        error=f.get("exception"),
+                        username=username,
+                    )
+                    downloads.append(d)
         if state:
             downloads = [d for d in downloads if d.state.lower() == state.lower()]
         return downloads
