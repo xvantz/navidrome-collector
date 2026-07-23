@@ -50,6 +50,7 @@
             homepage = "https://git.827482.xyz/xvantz/navidrome-collector";
             license = pkgs.lib.licenses.mit;
             maintainers = with pkgs.lib.maintainers; [ xvantz ];
+            mainProgram = "navidrome-collector";
           };
         };
       in
