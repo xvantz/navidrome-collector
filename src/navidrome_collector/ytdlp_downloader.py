@@ -157,7 +157,7 @@ def _tag_file(path: Path, meta: dict) -> None:
     track_meta = TrackMeta(
         artist=artist,
         title=title or yt_title,
-        album=f"YouTube {year}" if year else "YouTube",
+        album="YouTube",
         year=year,
         genre="",
         track_number="",
