@@ -100,4 +100,9 @@ def organize(
 
     elapsed = time.monotonic() - start
     clog.info("organised → %s (%.1fs)", dest, elapsed)
+
+    # Post-process: enrich with cover art, lyrics, genre
+    from .enricher import enrich
+    enrich(dest, meta)
+
     return dest
