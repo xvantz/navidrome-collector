@@ -105,7 +105,7 @@ class Collector:
         return stats
 
     def _start_downloads(self, query: str, artist: str | None = None, title: str | None = None) -> tuple[Optional[bool], list]:
-        """yt-dlp first (instant), then try Soulseek in background.
+        """Try yt-dlp and Soulseek, compare scores, pick best.
 
         Uses artist/title for relevance scoring if available;
         falls back to parsing 'Artist - Title' from query.
@@ -120,38 +120,43 @@ class Collector:
             parsed_artist, parsed_title = parse_query(query)
             artist = artist or parsed_artist
             title = title or parsed_title
-        if artist and title:
-            clog = stage_logger(__name__, stage="ytdlp")
-            clog.info("trying yt-dlp first: %s - %s", artist, title)
-        else:
-            clog = stage_logger(__name__, stage="ytdlp")
-            clog.info("trying yt-dlp first: %s", query)
-        with timed(clog, "yt-dlp search"):
-            yt = self._ytdlp_fallback(query)
-        if yt:
-            clog.info("yt-dlp succeeded: %s", query)
-            return (True, [])
 
-        # Step 2: Soulseek — try to find FLAC/320kbps
+        # Step 1: yt-dlp — fast download, score the result
+        yt_path: Optional[Path] = None
+        yt_info: Optional[dict] = None
+        yt_score = 0
+        if self.ytdlp_fallback:
+            clog = stage_logger(__name__, stage="ytdlp")
+            clog.info("trying yt-dlp: %s", query)
+            with timed(clog, "yt-dlp download"):
+                from .ytdlp_downloader import search_and_download
+                yt_path, yt_info = search_and_download(query, self.ytdlp_dir)
+            if yt_path:
+                from .matcher import score_ytdlp
+                yt_score = score_ytdlp(yt_info, yt_path)
+                clog.info("yt-dlp result: %s (score=%d)", yt_path.name, yt_score)
+
+        # Step 2: Soulseek search
         clog = stage_logger(__name__, stage="slskd")
         clog.info("Soulseek search: %s", query)
         with timed(clog, "Soulseek search"):
             files = self.slskd.search(query)
+
         if not files:
-            clog.warning("no results: %s", query)
+            if yt_path:
+                clog.info("no Soulseek results, using yt-dlp")
+                result = organize_file(yt_path, self.music_dir)
+                return (bool(result), [])
+            clog.warning("no results from any source: %s", query)
             return (None, [])
 
-        # Score and sort with relevance bonus
+        # Score and sort Soulseek with relevance bonus
         for f in files:
             base_score = self._score(f)
             if title:
                 f_title = extract_track_title(f.filename)
                 sim = title_similarity(title, f_title)
-                # Relevance bonus: +150 for perfect match, 0 for no match
                 relevance_bonus = sim * 150
-                # Mismatch penalty: if title is known and similarity is very low,
-                # penalize heavily — this prevents wrong high-quality FLACs from
-                # beating the correct track
                 mismatch_penalty = -400 if (sim < 0.3 and len(title) > 2) else 0
                 f._score = base_score + relevance_bonus + mismatch_penalty
                 f._title = f_title
@@ -162,13 +167,28 @@ class Collector:
                 f._similarity = 0.0
 
         files.sort(key=lambda f: f._score, reverse=True)
-
+        best_slskd = files[0]
         clog.info("found %d file(s), scoring + relevance...", len(files))
-        clog.debug("best: %s (%s, score=%0.1f, sim=%.2f)",
-                   Path(files[0].filename).name, files[0].username,
-                   files[0]._score, files[0]._similarity)
-        enqueued: list[tuple[str, str]] = []
+        clog.debug("best Soulseek: %s (%s, score=%.0f, sim=%.2f)",
+                   Path(best_slskd.filename).name, best_slskd.username,
+                   best_slskd._score, best_slskd._similarity)
 
+        # Step 3: Compare — pick the best source
+        if yt_path and yt_score >= best_slskd._score:
+            clog.info("yt-dlp (score=%d) >= best Soulseek (%.0f), using yt-dlp",
+                      yt_score, best_slskd._score)
+            result = organize_file(yt_path, self.music_dir)
+            return (bool(result), [])
+
+        if yt_path:
+            clog.info("Soulseek (%.0f) beats yt-dlp (%d), enqueuing Soulseek",
+                      best_slskd._score, yt_score)
+            # yt-dlp temp file will be cleaned up on next run
+        else:
+            clog.info("yt-dlp failed, using Soulseek")
+
+        # Enqueue Soulseek candidates
+        enqueued: list[tuple[str, str]] = []
         for chosen in files:
             if len(enqueued) >= _MAX_PARALLEL:
                 break
@@ -192,6 +212,12 @@ class Collector:
         if enqueued:
             clog.info("enqueued %d candidate(s) for: %s", len(enqueued), query)
             return (False, enqueued)
+
+        # Nothing enqueued — use yt-dlp as last resort if we have it
+        if yt_path:
+            clog.info("Soulseek enqueue all failed, falling back to yt-dlp")
+            result = organize_file(yt_path, self.music_dir)
+            return (bool(result), [])
 
         clog.warning("no candidates could be enqueued: %s", query)
         return (None, [])
@@ -259,7 +285,7 @@ class Collector:
         return None
 
     def _ytdlp_download(self, item) -> Optional[Path]:
-        """Try to download a single item via yt-dlp."""
+        """Try to download a single item via yt-dlp. Returns file path or None."""
         if not self.ytdlp_fallback:
             return None
         clog = stage_logger(__name__, stage="ytdlp", item_id=item.id)
@@ -267,7 +293,8 @@ class Collector:
         with timed(clog, "yt-dlp download"):
             try:
                 from .ytdlp_downloader import search_and_download
-                return search_and_download(item.query, self.ytdlp_dir)
+                path, _ = search_and_download(item.query, self.ytdlp_dir)
+                return path
             except Exception as e:
                 clog.warning("yt-dlp failed: %s", e)
                 return None
@@ -281,9 +308,9 @@ class Collector:
         with timed(clog, "yt-dlp fallback"):
             try:
                 from .ytdlp_downloader import search_and_download
-                yt_file = search_and_download(query, self.ytdlp_dir)
-                if yt_file:
-                    result = organize_file(yt_file, self.music_dir)
+                path, _ = search_and_download(query, self.ytdlp_dir)
+                if path:
+                    result = organize_file(path, self.music_dir)
                     if result:
                         return bool(result)
                 clog.warning("yt-dlp returned nothing")

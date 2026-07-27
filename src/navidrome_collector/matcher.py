@@ -86,3 +86,47 @@ def title_similarity(expected: str, actual: str) -> float:
     intersection = exp_tokens & act_tokens
     union = exp_tokens | act_tokens
     return len(intersection) / len(union)
+
+
+# ── Scoring for download sources ──────────────────────────
+
+_FORMAT_PREFERENCE = {
+    ".flac": 5,
+    ".wav":  4,
+    ".m4a":  3,
+    ".aac":  3,
+    ".ogg":  2,
+    ".opus": 3,   # opus at quality 0 is excellent — bump to m4a level
+    ".mp3":  1,
+    ".wma":  0,
+}
+
+
+def score_format(suffix: str) -> int:
+    """Score a file format/container. Higher = better quality potential."""
+    return _FORMAT_PREFERENCE.get(suffix.lower(), -1)
+
+
+def score_ytdlp(yt_info: dict | None, file_path: str | Path | None = None) -> int:
+    """Score a yt-dlp download result.
+
+    Uses actual bitrate from mutagen when available, falls back to
+    format-based estimate.
+    """
+    if not yt_info and not file_path:
+        return 0
+
+    if file_path:
+        p = Path(file_path) if isinstance(file_path, str) else file_path
+        ext = p.suffix.lower()
+    else:
+        ext = ".opus"  # default yt-dlp output
+
+    fmt_score = score_format(ext)
+    bitrate = yt_info.get("bitrate", 0) if yt_info else 0
+    bitrate_score = min(bitrate / 320_000, 2.0) if bitrate else 1.0
+
+    # yt-dlp has no queue/slot issues, but isn't lossless
+    score = fmt_score * 100 + bitrate_score * 10
+
+    return int(score)

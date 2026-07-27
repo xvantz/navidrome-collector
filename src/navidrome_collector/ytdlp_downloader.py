@@ -26,8 +26,13 @@ _TITLE_CLEANUP = re.compile(
 )
 
 
-def search_and_download(query: str, output_dir: str | Path, max_duration: int = 600) -> Optional[Path]:
-    """Search YouTube for the best audio match, download and tag it."""
+def search_and_download(query: str, output_dir: str | Path, max_duration: int = 600) -> tuple[Optional[Path], Optional[dict]]:
+    """Search YouTube for the best audio match, download and tag it.
+
+    Returns:
+        (filepath, info_dict) on success, (None, None) on failure.
+        info_dict contains: title, channel, uploader, upload_date, url, bitrate
+    """
     start = time.monotonic()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -58,13 +63,13 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         yt_log.warning("timed out (120s): %s", query)
-        return None
+        return None, None
     except FileNotFoundError:
         yt_log.warning("yt-dlp not found (install nixpkgs.yt-dlp)")
-        return None
+        return None, None
     except Exception as e:
         yt_log.warning("subprocess error: %s", e)
-        return None
+        return None, None
 
     elapsed = time.monotonic() - start
 
@@ -72,7 +77,7 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
         stderr = result.stderr.strip()
         err_msg = stderr.split("\n")[-1] if stderr else "unknown error"
         yt_log.warning("failed (%.1fs): %s", elapsed, err_msg)
-        return None
+        return None, None
 
     lines = [l.strip() for l in result.stdout.split("\n") if l.strip()]
     metadata = _parse_metadata(lines)
@@ -95,17 +100,28 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
 
     if not file_path or not file_path.exists() or file_path.stat().st_size == 0:
         yt_log.warning("no audio file found after download (%.1fs)", elapsed)
-        return None
+        return None, None
 
     size_mb = file_path.stat().st_size / 1_048_576
-    yt_log.info("downloaded: %s (%.1f MB) in %.1fs", file_path.name, size_mb, elapsed)
+
+    # Read actual bitrate from the downloaded file
+    actual_bitrate = 0
+    try:
+        import mutagen
+        af = mutagen.File(str(file_path))
+        if af is not None:
+            actual_bitrate = getattr(af.info, "bitrate", 0) or 0
+    except Exception:
+        pass
 
     if metadata:
+        metadata["bitrate"] = actual_bitrate
         _tag_file(file_path, metadata)
-        yt_log.info("tagged: %s → %s - %s", file_path.name,
-                    metadata.get("channel", "?"), metadata.get("title", "?"))
 
-    return file_path
+    yt_log.info("downloaded: %s (%.1f MB, %d kbps) in %.1fs",
+                file_path.name, size_mb, actual_bitrate // 1000, elapsed)
+
+    return file_path, metadata
 
 
 def _parse_metadata(lines: list[str]) -> Optional[dict]:
