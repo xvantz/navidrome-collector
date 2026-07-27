@@ -192,13 +192,16 @@ def fingerprint(path: str | Path) -> Optional[TrackMeta]:
     try:
         # Generate fingerprint first
         fp_data = acoustid.fingerprint_file(str(path))
+        if fp_data and len(fp_data) >= 2:
+            duration, fingerprint = fp_data
+            log.debug("Fingerprint generated (%.1fs, %d bytes), but no API key for lookup",
+                      duration, len(fingerprint) if fingerprint else 0)
     except Exception as e:
         log.debug("Fingerprint generation failed: %s", e)
         return None
 
     # Try to match via the web API if we happen to have a key
     # Otherwise just log and return None
-    log.debug("Fingerprint generated (%d bytes), but no API key for lookup", len(fp_data[0]) if fp_data else 0)
     return None
 
 
