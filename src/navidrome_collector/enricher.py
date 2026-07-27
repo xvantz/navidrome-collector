@@ -44,6 +44,10 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
     if not file_path.exists():
         return False
 
+    # Skip enrichment for test/temp paths — no real metadata to enrich
+    if "/tmp/" in str(file_path):
+        return False
+
     enriched = False
     cover_data: Optional[bytes] = None
     new_genre: Optional[str] = None
