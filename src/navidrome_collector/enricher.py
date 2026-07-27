@@ -56,8 +56,10 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
     # 1. MusicBrainz — get recording + release info
     recording = _musicbrainz_search(meta.artist, meta.title)
     if recording:
-        enrich_log.debug("MusicBrainz match: %s (%s)",
-                         recording.get("id", "?"), recording.get("release_mbid", "?"))
+        enrich_log.debug("MusicBrainz match: %s (release=%s, genre=%s)",
+                         recording.get("id", "?"),
+                         recording.get("release_mbid", "?"),
+                         recording.get("genre", "?"))
 
         # 2. Cover art
         release_mbid = recording.get("release_mbid")
@@ -70,6 +72,14 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
 
         # 3. Genre
         new_genre = recording.get("genre")
+
+        # 4. Album from MusicBrainz if missing
+        if not meta.album or meta.album in ("Unknown Album", "Unknown", ""):
+            mb_album = recording.get("album")
+            if mb_album:
+                mb_year = recording.get("year")
+                meta.album = f"{mb_album} ({mb_year})" if mb_year else mb_album
+                enrich_log.info("album: %s", meta.album)
 
     # 4. Lyrics (parallel to cover/genre - no deps)
     with timed(enrich_log, "lyrics"):
@@ -139,39 +149,47 @@ def _musicbrainz_search(artist: str, title: str) -> Optional[dict]:
         "id": recording.get("id"),
         "release_mbid": None,
         "genre": None,
+        "album": None,
+        "year": None,
     }
 
     # Get detailed info with releases and genres
     rid = recording.get("id", "")
     if rid:
-        detail = _mb_request(f"/recording/{rid}?inc=releases+artists+genres")
+        detail = _mb_request(f"/recording/{rid}?inc=releases+artists+genres+tags")
         if detail:
-            # Pick the first official release with cover art
+            enrich_log.debug("MusicBrainz detail: title=%s, %d release(s), %d tag(s)",
+                             detail.get("title", "?"),
+                             len(detail.get("releases", [])),
+                             len(detail.get("tags", []) + detail.get("genres", [])))
+
+            # Pick the first official release (case-insensitive) and extract album/year
             releases = detail.get("releases", [])
             for rel in releases:
-                status = rel.get("status", "")
-                if status in ("Official",):
+                status = (rel.get("status") or "").lower()
+                if status in ("official",):
                     result["release_mbid"] = rel.get("id")
+                    result["album"] = rel.get("title", "")
+                    result["year"] = (rel.get("date") or "")[:4]
+                    enrich_log.debug("  official release: %s (%s, %s)",
+                                     result["album"], result["release_mbid"], result["year"] or "?")
                     break
             if not result["release_mbid"] and releases:
                 result["release_mbid"] = releases[0].get("id")
+                result["album"] = releases[0].get("title", "")
+                result["year"] = (releases[0].get("date") or "")[:4]
+                enrich_log.debug("  fallback release: %s (%s, %s)",
+                                 result["album"], result["release_mbid"], result["year"] or "?")
 
-            # Genre from tags
-            tags = detail.get("tags", [])
-            if tags:
-                # Sort by count, pick top genre
-                tags.sort(key=lambda t: t.get("count", 0), reverse=True)
-                result["genre"] = tags[0].get("name", "").capitalize()
-
-            # Also try recording-level genres
-            if not result["genre"]:
-                for rel in releases:
-                    for tag in rel.get("tags", []):
-                        if tag.get("count", 0) > 0:
-                            result["genre"] = tag.get("name", "").capitalize()
-                            break
-                    if result["genre"]:
-                        break
+            # Genre — try genres field first (MB API v2), then tags
+            genre_sources = (
+                detail.get("genres", []) +
+                detail.get("tags", [])
+            )
+            if genre_sources:
+                genre_sources.sort(key=lambda t: t.get("count", 0), reverse=True)
+                result["genre"] = genre_sources[0].get("name", "").capitalize()
+                enrich_log.debug("  genre: %s", result["genre"])
 
     return result
 
