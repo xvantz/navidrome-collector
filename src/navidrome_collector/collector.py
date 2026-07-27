@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from .logger import stage_logger, timed
 from .queue import Queue
 from .slskd_client import SlskdClient, SlskdFile
 from .tagger import TrackMeta, read_tags
@@ -53,13 +54,18 @@ class Collector:
         Returns dict with counts: processed, succeeded, failed.
         """
         stats = {"processed": 0, "succeeded": 0, "failed": 0}
+        log.info("process_queue: checking %d processing item(s)...",
+                 len(self.queue.list_items(status="processing")))
 
         # 1. Check previously enqueued downloads
         for item in self.queue.list_items(status="processing"):
+            clog = stage_logger(__name__, stage="download", item_id=item.id)
+            clog.info("checking %s", item.query)
             result = self._check_downloads(item)
             if result:
                 self.queue.mark_done(item.id, str(result))
                 stats["succeeded"] += 1
+                clog.info("download complete → %s", result)
             # if download still in progress — skip, next run will check again
             # if all failed — mark as failed and we can retry later
 
@@ -72,19 +78,24 @@ class Collector:
                 break
 
             stats["processed"] += 1
+            clog = stage_logger(__name__, stage="search", item_id=item.id)
+            clog.info("starting: %s", item.query)
             try:
                 result, enqueued = self._start_downloads(item.query)
                 if result is True:
                     self.queue.mark_done(item.id, "")
                     stats["succeeded"] += 1
+                    clog.info("done ✓")
                 elif result is None:
                     self.queue.mark_failed(item.id, "No source available")
                     stats["failed"] += 1
+                    clog.warning("no source found")
                 else:
                     # result is False = enqueued, waiting for later check
                     self.queue.mark_processing(item.id, enqueued)
                     # don't count in processed/failed — it's pending
                     stats["processed"] -= 1
+                    clog.info("enqueued %d Soulseek download(s), will check later", len(enqueued))
             except Exception as e:
                 log.exception("Failed to process item %d: %s", item.id, e)
                 self.queue.mark_failed(item.id, str(e))
@@ -101,16 +112,26 @@ class Collector:
             (None, [])  → nothing found at all
         """
         # Step 1: yt-dlp — always works, gives instant result
-        yt = self._ytdlp_fallback(query)
+        clog = stage_logger(__name__, stage="ytdlp")
+        clog.info("trying yt-dlp first: %s", query)
+        with timed(clog, "yt-dlp search"):
+            yt = self._ytdlp_fallback(query)
         if yt:
+            clog.info("yt-dlp succeeded: %s", query)
             return (True, [])
 
         # Step 2: Soulseek — try to find FLAC/320kbps
-        files = self.slskd.search(query)
+        clog = stage_logger(__name__, stage="slskd")
+        clog.info("Soulseek search: %s", query)
+        with timed(clog, "Soulseek search"):
+            files = self.slskd.search(query)
         if not files:
+            clog.warning("no results: %s", query)
             return (None, [])
 
+        clog.info("found %d file(s), scoring...", len(files))
         files.sort(key=lambda f: self._score(f), reverse=True)
+        clog.debug("best: %s (%s, %0.1f)", files[0].filename, files[0].username, self._score(files[0]))
         enqueued: list[tuple[str, str]] = []
 
         for chosen in files:
@@ -119,9 +140,12 @@ class Collector:
             if chosen.size == 0 or chosen.bitrate == 0:
                 continue
 
-            dl_id = self.slskd.enqueue(chosen.username, chosen.filename, chosen.size)
+            with timed(clog, "enqueue"):
+                dl_id = self.slskd.enqueue(chosen.username, chosen.filename, chosen.size)
             if dl_id:
                 enqueued.append((chosen.username, chosen.filename))
+                clog.info("enqueued from %s: %s (%d kbps)", chosen.username,
+                          Path(chosen.filename).name, chosen.bitrate)
             else:
                 completed = self._find_completed(chosen)
                 if completed:
@@ -130,13 +154,15 @@ class Collector:
                         return (True, [])
 
         if enqueued:
-            log.info("Soulseek: enqueued %d candidates for: %s", len(enqueued), query)
+            clog.info("enqueued %d candidate(s) for: %s", len(enqueued), query)
             return (False, enqueued)
 
+        clog.warning("no candidates could be enqueued: %s", query)
         return (None, [])
 
     def _check_downloads(self, item) -> Optional[Path]:
         """Check if any previously enqueued download completed."""
+        clog = stage_logger(__name__, stage="download", item_id=item.id)
         # Parse the stored meta from the queue item
         try:
             meta = json.loads(item.error) if item.error else {}
@@ -144,15 +170,17 @@ class Collector:
             meta = {}
 
         pending = meta.get("pending", [])
+        clog.debug("checking %d pending download(s)", len(pending))
 
         for username, filename in pending:
             local = self._find_local_path(username, filename)
             if local:
-                log.info("Download completed: %s → organising", local)
+                clog.info("found completed: %s → organising", local)
                 return organize_file(local, self.music_dir)
 
         # Check if any downloads errored / aborted for this query
-        downloads = self.slskd.get_downloads()
+        with timed(clog, "get_downloads"):
+            downloads = self.slskd.get_downloads()
         still_waiting = False
         all_failed = True
 
@@ -162,47 +190,58 @@ class Collector:
                     if "Completed" in d.state and "Aborted" not in d.state:
                         local = self._find_local_path(username, filename)
                         if local:
+                            clog.info("completed in slskd state: %s", d.state)
                             return organize_file(local, self.music_dir)
                     if d.state in ("Queued", "InProgress", "Requested") or "Locally" in d.state:
                         still_waiting = True
                         all_failed = False
                     elif "Aborted" in d.state or d.state in ("Errored", "Cancelled"):
+                        clog.debug("candidate failed: %s/%s → %s", username, filename, d.state)
                         continue  # this one failed, check others
 
         if still_waiting:
-            log.info("Downloads still in progress, will check next run")
+            clog.info("downloads still in progress, will check next run")
             return None  # still processing
 
         if all_failed:
-            log.warning("All Soulseek downloads failed, trying yt-dlp")
+            clog.warning("all Soulseek downloads failed, trying yt-dlp")
             # Try yt-dlp now instead of waiting for re-queue
             return organize_file(self._ytdlp_download(item), self.music_dir) if item else None
+
+        clog.debug("no pending downloads match current slskd state")
+        return None
 
     def _ytdlp_download(self, item) -> Optional[Path]:
         """Try to download a single item via yt-dlp."""
         if not self.ytdlp_fallback:
             return None
-        try:
-            from .ytdlp_downloader import search_and_download
-            return search_and_download(item.query, self.ytdlp_dir)
-        except Exception as e:
-            log.warning("yt-dlp failed for %s: %s", item.query, e)
-            return None
+        clog = stage_logger(__name__, stage="ytdlp", item_id=item.id)
+        clog.info("yt-dlp download: %s", item.query)
+        with timed(clog, "yt-dlp download"):
+            try:
+                from .ytdlp_downloader import search_and_download
+                return search_and_download(item.query, self.ytdlp_dir)
+            except Exception as e:
+                clog.warning("yt-dlp failed: %s", e)
+                return None
 
     def _ytdlp_fallback(self, query: str) -> Optional[bool]:
         """Try yt-dlp as last resort. Returns True if successful."""
         if not self.ytdlp_fallback:
             return None
-        log.info("yt-dlp fallback for: %s", query)
-        try:
-            from .ytdlp_downloader import search_and_download
-            yt_file = search_and_download(query, self.ytdlp_dir)
-            if yt_file:
-                result = organize_file(yt_file, self.music_dir)
-                return bool(result)
-            log.warning("yt-dlp returned nothing")
-        except Exception as e:
-            log.warning("yt-dlp failed: %s", e)
+        clog = stage_logger(__name__, stage="ytdlp")
+        clog.info("yt-dlp fallback for: %s", query)
+        with timed(clog, "yt-dlp fallback"):
+            try:
+                from .ytdlp_downloader import search_and_download
+                yt_file = search_and_download(query, self.ytdlp_dir)
+                if yt_file:
+                    result = organize_file(yt_file, self.music_dir)
+                    if result:
+                        return bool(result)
+                clog.warning("yt-dlp returned nothing")
+            except Exception as e:
+                clog.warning("yt-dlp failed: %s", e)
         return None
 
     def _find_completed(self, file: SlskdFile) -> Optional[Path]:

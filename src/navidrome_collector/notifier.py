@@ -6,7 +6,10 @@ import os
 import urllib.request
 from typing import Optional
 
+from .logger import stage_logger
+
 log = logging.getLogger(__name__)
+tg_log = stage_logger(__name__, stage="telegram")
 
 _offset = 0  # last processed Telegram update ID
 
@@ -28,9 +31,11 @@ def _api(method: str, payload: dict) -> Optional[dict]:
         url = f"https://api.telegram.org/bot{token}/{method}"
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return _json.loads(resp.read())
+            result = _json.loads(resp.read())
+        tg_log.debug("API %s → ok", method)
+        return result
     except Exception as e:
-        log.debug("Telegram API %s error: %s", method, e)
+        tg_log.warning("API %s failed: %s", method, e)
         return None
 
 
@@ -40,6 +45,7 @@ def send_message(text: str) -> None:
     if not chat_ids:
         log.info("[NOTIFY] %s", text)
         return
+    tg_log.info("sending to %d chat(s): %.80s", len(chat_ids), text)
     for cid in chat_ids:
         _api("sendMessage", {
             "chat_id": cid.strip(),
@@ -81,6 +87,7 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
 
         # Only respond to allowed chats
         if chat_id not in allowed_chats:
+            tg_log.debug("ignoring message from unauthorised chat %s", chat_id)
             continue
 
         # Dispatch commands
@@ -93,6 +100,7 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
                     "text": f"✅ Added #{idx}: {query}",
                 })
                 handled += 1
+                tg_log.info("command /add: #%d %s (chat %s)", idx, query, chat_id)
             else:
                 _api("sendMessage", {
                     "chat_id": chat_id,
@@ -116,6 +124,7 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
                     "parse_mode": "HTML",
                 })
             handled += 1
+            tg_log.info("command /list (%d items, chat %s)", len(items) if items else 0, chat_id)
 
         elif text == "/start" or text == "/help":
             _api("sendMessage", {
@@ -127,6 +136,7 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
                 "parse_mode": "HTML",
             })
             handled += 1
+            tg_log.info("command /start (chat %s)", chat_id)
 
         elif text == "/status":
             from .queue import Queue
@@ -140,5 +150,6 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
                 "parse_mode": "HTML",
             })
             handled += 1
+            tg_log.info("command /status (%d items, chat %s)", total, chat_id)
 
     return handled

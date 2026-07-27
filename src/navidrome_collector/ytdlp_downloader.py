@@ -6,12 +6,15 @@ Downloads best audio from YouTube and tags it with available metadata.
 import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
+from .logger import stage_logger
 from .tagger import TrackMeta, write_tags
 
 log = logging.getLogger(__name__)
+yt_log = stage_logger(__name__, stage="ytdlp")
 
 # Strip suffixes from YouTube channel names to get clean artist names
 _CHANNEL_CLEANUP = re.compile(
@@ -25,6 +28,7 @@ _TITLE_CLEANUP = re.compile(
 
 def search_and_download(query: str, output_dir: str | Path, max_duration: int = 600) -> Optional[Path]:
     """Search YouTube for the best audio match, download and tag it."""
+    start = time.monotonic()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(output_dir / "%(id)s.%(ext)s")
@@ -49,23 +53,25 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
         f"ytsearch:{query}",
     ]
 
-    log.info("yt-dlp: searching %s", query)
+    yt_log.info("searching: %s", query)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
-        log.warning("yt-dlp timed out for: %s", query)
+        yt_log.warning("timed out (120s): %s", query)
         return None
     except FileNotFoundError:
-        log.warning("yt-dlp not found. Install with: nixpkgs.yt-dlp")
+        yt_log.warning("yt-dlp not found (install nixpkgs.yt-dlp)")
         return None
     except Exception as e:
-        log.warning("yt-dlp failed for %s: %s", query, e)
+        yt_log.warning("subprocess error: %s", e)
         return None
+
+    elapsed = time.monotonic() - start
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        if stderr:
-            log.warning("yt-dlp error: %s", stderr.split("\n")[-1])
+        err_msg = stderr.split("\n")[-1] if stderr else "unknown error"
+        yt_log.warning("failed (%.1fs): %s", elapsed, err_msg)
         return None
 
     lines = [l.strip() for l in result.stdout.split("\n") if l.strip()]
@@ -88,14 +94,16 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
             file_path = audio_files[0]
 
     if not file_path or not file_path.exists() or file_path.stat().st_size == 0:
-        log.warning("yt-dlp: no audio file found in %s", output_dir)
+        yt_log.warning("no audio file found after download (%.1fs)", elapsed)
         return None
 
-    log.info("yt-dlp: downloaded %s (%.1f MB)", file_path.name, file_path.stat().st_size / 1_048_576)
+    size_mb = file_path.stat().st_size / 1_048_576
+    yt_log.info("downloaded: %s (%.1f MB) in %.1fs", file_path.name, size_mb, elapsed)
 
     if metadata:
         _tag_file(file_path, metadata)
-        log.info("yt-dlp: tagged with metadata from YouTube")
+        yt_log.info("tagged: %s → %s - %s", file_path.name,
+                    metadata.get("channel", "?"), metadata.get("title", "?"))
 
     return file_path
 

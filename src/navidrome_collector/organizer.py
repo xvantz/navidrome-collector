@@ -2,9 +2,11 @@
 
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
+from .logger import stage_logger
 from .tagger import TrackMeta, read_tags, fingerprint
 
 log = logging.getLogger(__name__)
@@ -32,10 +34,14 @@ def organize(
 
     Returns the destination path, or None if the source file is missing.
     """
+    start = time.monotonic()
+    clog = stage_logger(__name__, stage="organize")
     source = Path(source_path)
     if not source.exists():
         log.error("Source file not found: %s", source)
         return None
+
+    clog.info("organising: %s (%.1f MB)", source.name, source.stat().st_size / 1_048_576)
 
     # Read or fetch metadata
     if meta is None:
@@ -46,6 +52,7 @@ def organize(
         fp_meta = fingerprint(source)
         if fp_meta and fp_meta.has_tags:
             meta = fp_meta
+            clog.info("AcoustID matched: %s - %s", meta.artist, meta.title)
         else:
             # Last resort: use filename as title
             meta = TrackMeta(
@@ -54,6 +61,7 @@ def organize(
                 album="Unknown Album",
                 has_tags=True,
             )
+            clog.info("using filename as title: %s", source.stem)
 
     artist = sanitize(meta.artist or "Unknown")
     album = sanitize(meta.album or "Unknown Album")
@@ -73,6 +81,8 @@ def organize(
     dest = Path(music_dir) / artist / album / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
 
+    clog.info("destination: %s", dest)
+
     # Move (or copy+remove for cross-fs safety)
     if dest.exists():
         log.warning("Destination exists, overwriting: %s", dest)
@@ -88,5 +98,6 @@ def organize(
     from .tagger import write_tags
     write_tags(dest, meta)
 
-    log.info("Organized: %s → %s", source, dest)
+    elapsed = time.monotonic() - start
+    clog.info("organised → %s (%.1fs)", dest, elapsed)
     return dest

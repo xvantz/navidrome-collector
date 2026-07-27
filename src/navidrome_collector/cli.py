@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from . import __version__
+from .logger import setup_logging, stage_logger
 from .queue import Queue
 from .slskd_client import SlskdClient
 
@@ -34,12 +35,7 @@ _DEFAULT_CONFIG = Path("/etc/navidrome-collector/config.yaml")
 @click.pass_context
 def cli(ctx, db, slskd_url, slskd_key, music_dir, download_dir, ytdlp_dir, verbose):
     """Navidrome Music Collector — Soulseek-powered music downloader."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging(verbose=verbose)
 
     ctx.ensure_object(dict)
     ctx.obj["queue"] = Queue(db)
@@ -132,12 +128,18 @@ def process(ctx, max_items):
         download_dir=ctx.obj["download_dir"],
         ytdlp_dir=ctx.obj["ytdlp_dir"],
     )
+    log.info("process: starting (max_items=%s)", max_items or "unlimited")
+    import time
+    start = time.monotonic()
     stats = collector.process_queue(max_items=max_items)
+    elapsed = time.monotonic() - start
     click.echo(
         f"Done: {stats['processed']} processed, "
         f"{stats['succeeded']} succeeded, "
         f"{stats['failed']} failed."
     )
+    log.info("process: done in %.1fs (%d ok, %d failed)",
+             elapsed, stats["succeeded"], stats["failed"])
 
 
 # ── Daemon ─────────────────────────────────────────────
@@ -168,12 +170,14 @@ def daemon(ctx, interval, once):
     )
 
     send_message("🎵 Navidrome Collector started")
+    dlog = stage_logger(__name__, stage="daemon")
 
     if once:
         stats = collector.process_queue()
         click.echo(f"Done: {stats['succeeded']} ok, {stats['failed']} failed")
         return
 
+    dlog.info("started (poll interval=%ds)", interval)
     click.echo(f"Daemon mode: polling every {interval}s (Ctrl+C to stop)")
     last_process = 0
     while True:
@@ -181,7 +185,13 @@ def daemon(ctx, interval, once):
         try:
             # Process queue every N seconds
             if now - last_process >= interval:
+                dlog.debug("processing queue...")
+                start = time.monotonic()
                 stats = collector.process_queue()
+                elapsed = time.monotonic() - start
+                if stats["succeeded"] or stats["failed"]:
+                    dlog.info("cycle: %d ok, %d failed (%.1fs)",
+                              stats["succeeded"], stats["failed"], elapsed)
                 if stats["succeeded"]:
                     send_message(f"✅ Downloaded {stats['succeeded']} track(s)")
                 if stats["failed"]:
@@ -190,11 +200,15 @@ def daemon(ctx, interval, once):
                 downloads = slskd.get_downloads()
                 active = [d for d in downloads if "Queued" in d.state or "InProgress" in d.state or "Requested" in d.state]
                 if active:
+                    dlog.info("%d active download(s)", len(active))
                     for d in active[:3]:
                         name = d.filename.split("\\")[-1].split("/")[-1][:40]
                         pct = f"{d.bytes_downloaded}/{d.size}KB" if d.size else "waiting"
-                        log.info("  %s: %s — %s", d.username, name, pct)
+                        dlog.debug("  %s: %s — %s", d.username, name, pct)
                 last_process = now
+            else:
+                dlog.debug("skipping queue (last process %.0fs ago, interval %ds)",
+                           now - last_process, interval)
 
             # Always listen for Telegram commands (fast polling)
             try:
@@ -204,7 +218,7 @@ def daemon(ctx, interval, once):
                     lambda: collector.queue.list_items(),
                 )
                 if handled:
-                    log.info("Handled %d Telegram command(s)", handled)
+                    dlog.info("handled %d Telegram command(s)", handled)
             except Exception:
                 pass
 

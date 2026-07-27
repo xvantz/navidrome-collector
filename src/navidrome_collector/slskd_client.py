@@ -3,15 +3,19 @@
 API docs: https://github.com/slskd/slskd/blob/master/docs/api.md
 """
 
-import time
 import logging
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin
 
 import requests
 
+from .logger import stage_logger, timed
+
 log = logging.getLogger(__name__)
+rpc_log = stage_logger(__name__, stage="slskd")
 
 API_PREFIX = "/api/v0"
 
@@ -62,19 +66,23 @@ class SlskdClient:
         """Check if slskd is reachable."""
         try:
             resp = self._get("/server")
-            return resp.ok
-        except requests.RequestException:
+            ok = resp.ok
+            rpc_log.debug("ping → %s (%d)", "ok" if ok else "fail", resp.status_code)
+            return ok
+        except requests.RequestException as e:
+            rpc_log.warning("ping → unreachable: %s", e)
             return False
 
     # ── Search ──────────────────────────────────────────────
 
     def search(self, query: str) -> list[SlskdFile]:
         """Search Soulseek network. Returns list of matching files."""
+        rpc_log.info("search: %s", query)
         resp = self._post("/searches", {"searchText": query})
         data = resp.json() if resp.content else {}
         search_id = data.get("id") if isinstance(data, dict) else None
         if not search_id:
-            log.warning("Search returned no id")
+            rpc_log.warning("search returned no id for: %s", query)
             return []
 
         # Poll for results (search may be queued then complete)
@@ -91,7 +99,10 @@ class SlskdClient:
                 if resp.ok:
                     results = resp.json()
                     if results:
-                        return self._parse_files(results)
+                        files = self._parse_files(results)
+                        rpc_log.info("search: %s → %d file(s)", query, len(files))
+                        return files
+                rpc_log.info("search: %s → no results", query)
                 return []  # no results
             # InProgress = still waiting
             if state == "InProgress" or state == "Queued":
@@ -99,10 +110,12 @@ class SlskdClient:
             # Unknown state, try responses anyway
             resp = self._get(f"/searches/{search_id}/responses")
             if resp.ok and resp.json():
-                return self._parse_files(resp.json())
+                files = self._parse_files(resp.json())
+                rpc_log.info("search: %s → %d file(s) (late)", query, len(files))
+                return files
             break
 
-        log.warning("Search timed out: %s", query)
+        rpc_log.warning("search timed out (60s): %s", query)
         return []
 
     # ── Downloads ───────────────────────────────────────────
@@ -116,14 +129,20 @@ class SlskdClient:
         if resp.status_code in (200, 201):
             data = resp.json() if resp.content else {}
             if isinstance(data, list) and data:
-                return data[0].get("id") if isinstance(data[0], dict) else None
-            if isinstance(data, dict):
-                return data.get("id")
-            return None
+                dl_id = data[0].get("id") if isinstance(data[0], dict) else None
+            elif isinstance(data, dict):
+                dl_id = data.get("id")
+            else:
+                dl_id = None
+            if dl_id:
+                rpc_log.info("enqueue %s/%s → id=%s", username, Path(filename).name, dl_id)
+            else:
+                rpc_log.info("enqueue %s/%s → ok (no id)", username, Path(filename).name)
+            return dl_id
         if resp.status_code == 409:
-            log.info("Download already queued/completed: %s", filename)
+            rpc_log.info("enqueue %s/%s → already queued/completed", username, Path(filename).name)
             return None
-        log.warning("Enqueue failed (%d): %s", resp.status_code, resp.text[:200])
+        rpc_log.warning("enqueue %s/%s failed (%d): %.200s", username, Path(filename).name, resp.status_code, resp.text)
         return None
 
     def get_downloads(self, state: str | None = None) -> list[SlskdDownload]:
@@ -131,6 +150,7 @@ class SlskdClient:
         resp = self._get("/transfers/downloads")
         data = resp.json() if resp.ok and resp.content else []
         if not isinstance(data, list):
+            rpc_log.warning("get_downloads: unexpected response type %s", type(data).__name__)
             return []
         # Flatten the nested structure: username → directories → files
         downloads = []
@@ -149,7 +169,11 @@ class SlskdClient:
                     )
                     downloads.append(d)
         if state:
+            before = len(downloads)
             downloads = [d for d in downloads if d.state.lower() == state.lower()]
+            rpc_log.debug("get_downloads: %d total, %d matching %s", before, len(downloads), state)
+        else:
+            rpc_log.debug("get_downloads: %d download(s)", len(downloads))
         return downloads
 
     def wait_for_download(
@@ -171,11 +195,19 @@ class SlskdClient:
 
     def _post(self, path: str, json: Any) -> requests.Response:
         url = urljoin(self.base_url, API_PREFIX + path)
-        return self._session.post(url, json=json, timeout=self.timeout)
+        start = time.monotonic()
+        resp = self._session.post(url, json=json, timeout=self.timeout)
+        elapsed = time.monotonic() - start
+        rpc_log.debug("POST %s → %d (%.1fs)", path, resp.status_code, elapsed)
+        return resp
 
     def _get(self, path: str) -> requests.Response:
         url = urljoin(self.base_url, API_PREFIX + path)
-        return self._session.get(url, timeout=self.timeout)
+        start = time.monotonic()
+        resp = self._session.get(url, timeout=self.timeout)
+        elapsed = time.monotonic() - start
+        rpc_log.debug("GET %s → %d (%.1fs)", path, resp.status_code, elapsed)
+        return resp
 
     def _parse_files(self, data: Any) -> list[SlskdFile]:
         files: list[SlskdFile] = []

@@ -1,12 +1,15 @@
 """SQLite-backed queue for track download requests."""
 
 import json
+import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,7 +80,9 @@ class Queue:
             (query, artist, title, now, now),
         )
         self._conn().commit()
-        return cur.lastrowid
+        item_id = cur.lastrowid
+        log.info("add #%d: %s", item_id, query)
+        return item_id
 
     def next_pending(self) -> Optional[QueueItem]:
         """Claim the next pending item (atomic)."""
@@ -98,7 +103,9 @@ class Queue:
         data = dict(row)
         data["status"] = "in_progress"
         data["updated_at"] = now
-        return QueueItem(**data)
+        item = QueueItem(**data)
+        log.info("#%d: pending → in_progress: %s", item.id, item.query)
+        return item
 
     def mark_processing(self, item_id: int, pending_meta: list) -> None:
         """Mark item as processing with enqueued download metadata."""
@@ -108,6 +115,7 @@ class Queue:
             (json.dumps({"pending": pending_meta}), now, item_id),
         )
         self._conn().commit()
+        log.info("#%d: pending → processing (%d candidate(s))", item_id, len(pending_meta))
 
     def mark_done(self, item_id: int, file_path: str) -> None:
         """Mark item as completed."""
@@ -117,6 +125,7 @@ class Queue:
             (file_path, now, item_id),
         )
         self._conn().commit()
+        log.info("#%d: processing → done ✓", item_id)
 
     def mark_failed(self, item_id: int, error: str) -> None:
         """Mark item as failed."""
@@ -126,6 +135,7 @@ class Queue:
             (error, now, item_id),
         )
         self._conn().commit()
+        log.warning("#%d: processing → failed ✗: %s", item_id, error)
 
     def list_items(self, status: str | None = None) -> list[QueueItem]:
         if status:
@@ -166,3 +176,4 @@ class Queue:
             (now, item_id),
         )
         self._conn().commit()
+        log.info("#%d: → pending (retry)", item_id)
