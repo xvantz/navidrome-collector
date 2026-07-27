@@ -176,7 +176,17 @@ def _picture_block(data: bytes) -> str:
 # ── AcoustID fingerprinting (fallback for bare files) ─────
 
 def fingerprint(path: str | Path) -> Optional[TrackMeta]:
-    """Try acoustid + MusicBrainz for metadata. Returns None if unavailable."""
+    """Try acoustid + MusicBrainz for metadata. Returns None if unavailable.
+
+    Requires NVC_ACOUSTID_KEY env var (free at https://acoustid.org/login).
+    Without it, fingerprinting is skipped.
+    """
+    import os
+    api_key = os.environ.get("NVC_ACOUSTID_KEY", "")
+    if not api_key:
+        log.debug("NVC_ACOUSTID_KEY not set, skipping fingerprint")
+        return None
+
     try:
         import acoustid
     except ImportError:
@@ -187,22 +197,53 @@ def fingerprint(path: str | Path) -> Optional[TrackMeta]:
     if not path.exists():
         return None
 
-    # AcoustID requires an API key (free at https://acoustid.org/login)
-    # Without it, we can still fingerprint locally and compare format
     try:
-        # Generate fingerprint first
-        fp_data = acoustid.fingerprint_file(str(path))
-        if fp_data and len(fp_data) >= 2:
-            duration, fingerprint = fp_data
-            log.debug("Fingerprint generated (%.1fs, %d bytes), but no API key for lookup",
-                      duration, len(fingerprint) if fingerprint else 0)
-    except Exception as e:
-        log.debug("Fingerprint generation failed: %s", e)
-        return None
+        duration, fp = acoustid.fingerprint_file(str(path))
+        log.debug("fingerprint generated: %.1fs, %d bytes", duration, len(fp or ""))
 
-    # Try to match via the web API if we happen to have a key
-    # Otherwise just log and return None
-    return None
+        result = acoustid.lookup(api_key, fp, duration)
+        if not result or "results" not in result:
+            log.debug("AcoustID lookup returned no results")
+            return None
+
+        # Find the best match (highest score)
+        best = None
+        best_score = 0.0
+        for entry in result["results"]:
+            score = entry.get("score", 0)
+            recordings = entry.get("recordings", [])
+            if recordings and score > best_score:
+                best_score = score
+                best = recordings[0]
+
+        if not best or best_score < 0.5:
+            log.debug("AcoustID: best match score=%.2f too low", best_score)
+            return None
+
+        meta = TrackMeta(has_tags=True)
+        meta.title = best.get("title", "")
+
+        # Artist
+        artists = best.get("artists", [])
+        if artists:
+            meta.artist = " / ".join(
+                a.get("name", "") for a in artists if isinstance(a, dict)
+            )
+
+        # Album + year from release groups
+        release_groups = best.get("releasegroups", [])
+        if release_groups:
+            rg = release_groups[0]
+            meta.album = rg.get("title", "")
+            if rg.get("year"):
+                meta.year = str(rg["year"])
+
+        log.info("AcoustID matched: %s - %s (%.0f%%)", meta.artist, meta.title, best_score * 100)
+        return meta
+
+    except Exception as e:
+        log.debug("Fingerprint lookup failed: %s", e)
+        return None
 
 
 def _musicbrainz_lookup(recording_id: str) -> Optional[TrackMeta]:

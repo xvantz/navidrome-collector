@@ -34,6 +34,7 @@ in
           - NVC_SLSKD_KEY: slskd API key
           - NVC_TELEGRAM_TOKEN: Telegram bot token (optional)
           - NVC_TELEGRAM_CHAT_IDS: comma-separated Telegram chat IDs (optional)
+          - NVC_ACOUSTID_KEY: AcoustID API key for audio fingerprinting (optional, free at https://acoustid.org/login)
         '';
         example = lib.literalExpression "[ \"/run/secrets/nvc-common.env\" \"/run/secrets/nvc-telegram.env\" ]";
       };
