@@ -121,7 +121,7 @@ class SlskdClient:
     # ── Downloads ───────────────────────────────────────────
 
     def enqueue(self, username: str, filename: str, size: int = 0) -> str | None:
-        """Enqueue a file for download. Returns download id or None."""
+        """Enqueue a file for download. Returns download id or placeholder on success."""
         payload = {"filename": filename}
         if size > 0:
             payload["size"] = size
@@ -134,10 +134,9 @@ class SlskdClient:
                 dl_id = data.get("id")
             else:
                 dl_id = None
-            if dl_id:
-                rpc_log.info("enqueue %s/%s → id=%s", username, Path(filename).name, dl_id)
-            else:
-                rpc_log.info("enqueue %s/%s → ok (no id)", username, Path(filename).name)
+            # 200/201 = accepted, even without id in body
+            dl_id = dl_id or f"{username}|{filename}"
+            rpc_log.info("enqueue %s/%s → id=%s", username, Path(filename).name, dl_id)
             return dl_id
         if resp.status_code == 409:
             rpc_log.info("enqueue %s/%s → already queued/completed", username, Path(filename).name)
