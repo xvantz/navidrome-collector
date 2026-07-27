@@ -183,10 +183,12 @@ class Collector:
             downloads = self.slskd.get_downloads()
         still_waiting = False
         all_failed = True
+        found_any = False
 
         for username, filename in pending:
             for d in downloads:
                 if d.username == username and d.filename == filename:
+                    found_any = True
                     if "Completed" in d.state and "Aborted" not in d.state:
                         local = self._find_local_path(username, filename)
                         if local:
@@ -203,10 +205,19 @@ class Collector:
             clog.info("downloads still in progress, will check next run")
             return None  # still processing
 
+        if not found_any:
+            clog.warning("pending downloads not found in slskd state (%d downloads checked), "
+                         "may have been dropped or queued differently", len(downloads))
+            # Don't mark as failed yet — could be transient
+            return None
+
         if all_failed:
             clog.warning("all Soulseek downloads failed, trying yt-dlp")
             # Try yt-dlp now instead of waiting for re-queue
-            return organize_file(self._ytdlp_download(item), self.music_dir) if item else None
+            yt_result = self._ytdlp_download(item)
+            if yt_result:
+                return organize_file(yt_result, self.music_dir) if item else None
+            return None
 
         clog.debug("no pending downloads match current slskd state")
         return None
