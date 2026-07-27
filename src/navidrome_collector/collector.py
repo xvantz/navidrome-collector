@@ -10,6 +10,7 @@ from .queue import Queue
 from .slskd_client import SlskdClient, SlskdFile
 from .tagger import TrackMeta, read_tags
 from .organizer import organize as organize_file
+from .matcher import parse_query, extract_track_title, title_similarity
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class Collector:
             clog = stage_logger(__name__, stage="search", item_id=item.id)
             clog.info("starting: %s", item.query)
             try:
-                result, enqueued = self._start_downloads(item.query)
+                result, enqueued = self._start_downloads(item.query, artist=item.artist, title=item.title)
                 if result is True:
                     self.queue.mark_done(item.id, "")
                     stats["succeeded"] += 1
@@ -103,17 +104,28 @@ class Collector:
 
         return stats
 
-    def _start_downloads(self, query: str) -> tuple[Optional[bool], list]:
+    def _start_downloads(self, query: str, artist: str | None = None, title: str | None = None) -> tuple[Optional[bool], list]:
         """yt-dlp first (instant), then try Soulseek in background.
+
+        Uses artist/title for relevance scoring if available;
+        falls back to parsing 'Artist - Title' from query.
 
         Returns:
             (True, [])  → download complete (file organised)
             (False, enqueued) → Soulseek enqueued, waiting
             (None, [])  → nothing found at all
         """
-        # Step 1: yt-dlp — always works, gives instant result
-        clog = stage_logger(__name__, stage="ytdlp")
-        clog.info("trying yt-dlp first: %s", query)
+        # Parse query for artist/title if not explicit
+        if not artist or not title:
+            parsed_artist, parsed_title = parse_query(query)
+            artist = artist or parsed_artist
+            title = title or parsed_title
+        if artist and title:
+            clog = stage_logger(__name__, stage="ytdlp")
+            clog.info("trying yt-dlp first: %s - %s", artist, title)
+        else:
+            clog = stage_logger(__name__, stage="ytdlp")
+            clog.info("trying yt-dlp first: %s", query)
         with timed(clog, "yt-dlp search"):
             yt = self._ytdlp_fallback(query)
         if yt:
@@ -129,9 +141,32 @@ class Collector:
             clog.warning("no results: %s", query)
             return (None, [])
 
-        clog.info("found %d file(s), scoring...", len(files))
-        files.sort(key=lambda f: self._score(f), reverse=True)
-        clog.debug("best: %s (%s, %0.1f)", files[0].filename, files[0].username, self._score(files[0]))
+        # Score and sort with relevance bonus
+        for f in files:
+            base_score = self._score(f)
+            if title:
+                f_title = extract_track_title(f.filename)
+                sim = title_similarity(title, f_title)
+                # Relevance bonus: +150 for perfect match, 0 for no match
+                relevance_bonus = sim * 150
+                # Mismatch penalty: if title is known and similarity is very low,
+                # penalize heavily — this prevents wrong high-quality FLACs from
+                # beating the correct track
+                mismatch_penalty = -400 if (sim < 0.3 and len(title) > 2) else 0
+                f._score = base_score + relevance_bonus + mismatch_penalty
+                f._title = f_title
+                f._similarity = sim
+            else:
+                f._score = base_score
+                f._title = ""
+                f._similarity = 0.0
+
+        files.sort(key=lambda f: f._score, reverse=True)
+
+        clog.info("found %d file(s), scoring + relevance...", len(files))
+        clog.debug("best: %s (%s, score=%0.1f, sim=%.2f)",
+                   Path(files[0].filename).name, files[0].username,
+                   files[0]._score, files[0]._similarity)
         enqueued: list[tuple[str, str]] = []
 
         for chosen in files:
@@ -144,8 +179,9 @@ class Collector:
                 dl_id = self.slskd.enqueue(chosen.username, chosen.filename, chosen.size)
             if dl_id:
                 enqueued.append((chosen.username, chosen.filename))
-                clog.info("enqueued from %s: %s (%d kbps)", chosen.username,
-                          Path(chosen.filename).name, chosen.bitrate)
+                clog.info("enqueued from %s: %s (%d kbps, sim=%.2f)", chosen.username,
+                          getattr(chosen, '_title', Path(chosen.filename).name),
+                          chosen.bitrate, getattr(chosen, '_similarity', 0))
             else:
                 completed = self._find_completed(chosen)
                 if completed:
