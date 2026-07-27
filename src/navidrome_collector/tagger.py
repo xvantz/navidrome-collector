@@ -53,13 +53,23 @@ def read_tags(path: str | Path) -> TrackMeta:
         return meta
 
     try:
-        meta.artist = _get_tag(audio, "artist")
-        meta.title = _get_tag(audio, "title")
-        meta.album = _get_tag(audio, "album")
-        meta.year = _get_year(audio)
-        meta.genre = _get_tag(audio, "genre")
-        meta.track_number = str(_get_tag(audio, "tracknumber")).split("/")[0]
-        meta.album_artist = _get_tag(audio, "albumartist", "album artist")
+        # MP4/M4A uses different tag keys (©ART, ©nam, ©alb, etc.)
+        if isinstance(audio, mutagen.mp4.MP4):
+            meta.artist = _get_tag(audio, "©ART", "arti", "aART", "artist")
+            meta.title = _get_tag(audio, "©nam", "titl", "title")
+            meta.album = _get_tag(audio, "©alb", "albu", "album")
+            meta.year = _get_year(audio)
+            meta.genre = _get_tag(audio, "©gen", "genre")
+            meta.track_number = _get_mp4_track(audio)
+            meta.album_artist = _get_tag(audio, "aART", "©ART", "albumartist", "album artist")
+        else:
+            meta.artist = _get_tag(audio, "artist")
+            meta.title = _get_tag(audio, "title")
+            meta.album = _get_tag(audio, "album")
+            meta.year = _get_year(audio)
+            meta.genre = _get_tag(audio, "genre")
+            meta.track_number = str(_get_tag(audio, "tracknumber")).split("/")[0]
+            meta.album_artist = _get_tag(audio, "albumartist", "album artist")
         meta.has_tags = bool(meta.artist and meta.title)
     except Exception as e:
         log.warning("Error reading tags from %s: %s", path, e)
@@ -85,11 +95,28 @@ def _get_tag(audio, *keys) -> str:
 
 
 def _get_year(audio) -> str:
-    """Extract year from date or year tag."""
-    for key in ("date", "year", "originaldate"):
+    """Extract year from date or year tag.
+    
+    MP4/M4A uses ©day, other formats use date/year.
+    """
+    for key in ("year", "originaldate", "©day", "date"):
         val = _get_tag(audio, key)
         if val and len(val) >= 4:
             return val[:4]
+    return ""
+
+
+def _get_mp4_track(audio) -> str:
+    """Extract track number from MP4/M4A tags (stored as tuple)."""
+    try:
+        val = audio.get("trkn")
+        if val and isinstance(val, list) and len(val) > 0:
+            track = val[0]
+            if isinstance(track, tuple) and len(track) > 0:
+                return str(track[0])
+            return str(track)
+    except (KeyError, IndexError, ValueError, TypeError):
+        pass
     return ""
 
 
@@ -106,17 +133,33 @@ def write_tags(path: str | Path, meta: TrackMeta, cover_data: bytes | None = Non
         log.warning("Cannot open %s for writing: %s", path, e)
         return False
 
-    audio["artist"] = meta.artist
-    audio["title"] = meta.title
-    audio["album"] = meta.album
-    if meta.year:
-        audio["date"] = meta.year
-    if meta.genre:
-        audio["genre"] = meta.genre
-    if meta.track_number:
-        audio["tracknumber"] = meta.track_number
-    if meta.album_artist:
-        audio["albumartist"] = meta.album_artist
+    if isinstance(audio, mutagen.mp4.MP4):
+        audio["©ART"] = meta.artist
+        audio["©nam"] = meta.title
+        audio["©alb"] = meta.album
+        if meta.year:
+            audio["©day"] = meta.year
+        if meta.genre:
+            audio["©gen"] = meta.genre
+        if meta.track_number:
+            try:
+                audio["trkn"] = [(int(meta.track_number), 0)]
+            except ValueError:
+                pass
+        if meta.album_artist:
+            audio["aART"] = meta.album_artist
+    else:
+        audio["artist"] = meta.artist
+        audio["title"] = meta.title
+        audio["album"] = meta.album
+        if meta.year:
+            audio["date"] = meta.year
+        if meta.genre:
+            audio["genre"] = meta.genre
+        if meta.track_number:
+            audio["tracknumber"] = meta.track_number
+        if meta.album_artist:
+            audio["albumartist"] = meta.album_artist
 
     # Embed cover art
     if cover_data and _can_embed_cover(audio):

@@ -44,17 +44,28 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
     if not file_path.exists():
         return False
 
-    # Skip enrichment for test/temp paths — no real metadata to enrich
-    if "/tmp/" in str(file_path):
+    # Only enrich files in the real music directory — skip test/temp paths
+    import os
+    music_dir_hint = os.environ.get("NVC_MUSIC_DIR", "/srv/music")
+    if not str(file_path).startswith(music_dir_hint):
         return False
 
     enriched = False
     cover_data: Optional[bytes] = None
     new_genre: Optional[str] = None
     lyrics: Optional[str] = None
+    original_album = meta.album
 
     # 1. MusicBrainz — get recording + release info
-    recording = _musicbrainz_search(meta.artist, meta.title)
+    # Clean up title: remove "Artist - " prefix if title contains artist
+    search_title = meta.title
+    search_artist = meta.artist
+    if search_artist and search_title:
+        prefix = f"{search_artist} - "
+        if search_title.upper().startswith(prefix.upper()):
+            search_title = search_title[len(prefix):].strip()
+            enrich_log.debug("cleaned title: %s → %s", meta.title, search_title)
+    recording = _musicbrainz_search(search_artist, search_title)
     if recording:
         enrich_log.debug("MusicBrainz match: %s (release=%s, genre=%s)",
                          recording.get("id", "?"),
@@ -70,16 +81,21 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
                     enrich_log.info("cover art: %s (%.1f KB)", file_path.name,
                                     len(cover_data) / 1024)
 
-        # 3. Genre
+        # 3. Genre — always override if MusicBrainz has something specific
         new_genre = recording.get("genre")
+        if new_genre and new_genre.lower() != "music":
+            meta.genre = new_genre
+            enrich_log.info("genre: %s", new_genre)
 
-        # 4. Album from MusicBrainz if missing
-        if not meta.album or meta.album in ("Unknown Album", "Unknown", ""):
-            mb_album = recording.get("album")
-            if mb_album:
-                mb_year = recording.get("year")
-                meta.album = f"{mb_album} ({mb_year})" if mb_year else mb_album
-                enrich_log.info("album: %s", meta.album)
+        # 4. Album/year from MusicBrainz — override yt-dlp garbage
+        mb_album = recording.get("album")
+        if mb_album and mb_album.lower() not in ("youtube", "unknown", ""):
+            mb_year = recording.get("year")
+            meta.album = f"{mb_album} ({mb_year})" if mb_year else mb_album
+            enrich_log.info("album: %s", meta.album)
+        if recording.get("year"):
+            meta.year = recording["year"]
+            enrich_log.info("year: %s", meta.year)
 
     # 4. Lyrics (parallel to cover/genre - no deps)
     with timed(enrich_log, "lyrics"):
@@ -88,7 +104,12 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
             enrich_log.info("lyrics: %s (%d chars)", file_path.name, len(lyrics))
 
     # Apply all enrichments in one write_tags call
-    if cover_data or new_genre or lyrics:
+    has_meta_update = bool(cover_data or new_genre or lyrics)
+    # Also save if album/year were updated
+    if not has_meta_update and recording:
+        has_meta_update = (meta.album != original_album)
+
+    if cover_data or new_genre or lyrics or has_meta_update:
         update_meta = TrackMeta(
             artist=meta.artist,
             title=meta.title,
@@ -117,17 +138,31 @@ def enrich(file_path: str | Path, meta: TrackMeta) -> bool:
 # ── MusicBrainz ────────────────────────────────────────────
 
 def _mb_request(path: str) -> Optional[dict]:
-    """Make a MusicBrainz API request with rate-limiting."""
-    url = f"{_MB_BASE}/{path}&fmt=json" if "?" in path else f"{_MB_BASE}/{path}?fmt=json"
+    """Make a MusicBrainz API request with rate-limiting and retry."""
+    clean_path = path.lstrip("/")
+    url = f"{_MB_BASE}/{clean_path}&fmt=json" if "?" in clean_path else f"{_MB_BASE}/{clean_path}?fmt=json"
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-    try:
-        # MusicBrainz rate limit: 1 req/s
-        time.sleep(1.0)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
-        enrich_log.debug("MusicBrainz request failed: %s", e)
-        return None
+    last_error = ""
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if isinstance(data, dict) and "error" in data:
+                    last_error = data["error"]
+                    enrich_log.debug("MB error (attempt %d/3): %s", attempt + 1, last_error)
+                    if "busy" in last_error.lower():
+                        time.sleep(3.0)
+                        continue
+                    return None
+                return data
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+            last_error = str(e)
+            enrich_log.debug("MB failed (attempt %d/3): %s", attempt + 1, last_error)
+        # Rate limit: 1 req/s — sleep between attempts
+        if attempt < 2:
+            time.sleep(1.5)
+    enrich_log.debug("MB request exhausted retries: %s", last_error)
+    return None
 
 
 def _musicbrainz_search(artist: str, title: str) -> Optional[dict]:
