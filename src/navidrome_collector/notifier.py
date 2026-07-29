@@ -159,8 +159,7 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
 def format_track_summary(item: dict) -> str:
     """Build a rich Telegram notification for a completed track.
 
-    item dict: id, query, status, file_path
-    Reads the organized file's tags + enriched metadata for the summary.
+    item dict: id, query, status, file_path, source? (optional)
     """
     query = item.get("query", "")
     file_path = item.get("file_path", "")
@@ -172,6 +171,15 @@ def format_track_summary(item: dict) -> str:
     genre = ""
     lines = 0
     has_cover = False
+
+    # Determine source from file path
+    source = item.get("source", "")
+    if not source and file_path:
+        # Guess source from known path patterns
+        if "YouTube" in file_path or "ytdlp" in file_path:
+            source = "yt-dlp"
+        elif Path(file_path).parent.name:
+            source = "Soulseek"
 
     if file_path and Path(file_path).exists():
         try:
@@ -198,25 +206,55 @@ def format_track_summary(item: dict) -> str:
         except Exception:
             pass
 
-    # Build message
-    parts = [f"✅ <b>{artist} - {title}</b>" if artist and title else f"✅ <b>{query}</b>"]
+    # ── Build the message ────────────────────────────────
 
-    if album:
-        parts.append(f"   💿 {album}")
-    if genre or file_path:
-        extra = []
-        if genre and genre.lower() not in ("music", ""):
-            extra.append(f"🎵 {genre}")
-        if lines:
-            extra.append(f"📝 {lines} lines")
-        if has_cover:
-            extra.append("🖼 cover")
-        if extra:
-            parts.append("   " + " | ".join(extra))
+    # Header: what was searched
+    header = f"🔍 <b>{query}</b>"
+
+    # Title line: what we got
+    title_line = f"✅ <b>{artist} - {title}</b>" if artist and title else ""
+
+    # Source + format line
+    source_info = f"📡 {source}" if source else ""
+
+    # Album (filter garbage where album just repeats artist)
+    album_display = ""
+    if album and album.lower() not in ("youtube", "unknown", ""):
+        # Skip if album is just "Artist AlbumName" pattern (MB noise)
+        album_clean = album.split(" (")[0]  # strip year from "Album (Year)"
+        if artist and album_clean.lower().startswith(artist.lower()):
+            # "Eminem Godzilla" when artist is "Eminem" → skip album
+            pass
+        else:
+            album_display = f"💿 {album}"
+
+    # Metadata chips
+    chips = []
+    if genre and genre.lower() not in ("music", "self-titled", "none", ""):
+        chips.append(f"🎵 {genre}")
+    if lines:
+        chips.append(f"📝 {lines} lines")
+    if has_cover:
+        chips.append("🖼 cover")
+
+    # Path
+    path_display = ""
     if file_path:
-        # Show relative path from music dir
         p = Path(file_path)
         short = "/".join(p.parts[-3:]) if len(p.parts) >= 3 else p.name
-        parts.append(f"   📁 {short}")
+        path_display = f"📁 {short}"
+
+    # Assemble
+    parts = [header]
+    if title_line:
+        parts.append(title_line)
+    if source_info:
+        parts.append(f"   {source_info}")
+    if album_display:
+        parts.append(f"   {album_display}")
+    if chips:
+        parts.append("   " + " | ".join(chips))
+    if path_display:
+        parts.append(f"   {path_display}")
 
     return "\n".join(parts)

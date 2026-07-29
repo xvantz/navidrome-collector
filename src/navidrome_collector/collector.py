@@ -75,6 +75,7 @@ class Collector:
                     "query": item.query,
                     "status": "done",
                     "file_path": str(result_path),
+                    "source": "Soulseek",
                 })
             # if download still in progress — skip, next run will check again
             # if all failed — mark as failed and we can retry later
@@ -101,6 +102,7 @@ class Collector:
                         "query": item.query,
                         "status": "done",
                         "file_path": "",
+                        "source": "yt-dlp",
                     })
                 elif result is None:
                     self.queue.mark_failed(item.id, "No source available")
