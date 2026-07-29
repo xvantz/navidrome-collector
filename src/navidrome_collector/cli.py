@@ -193,7 +193,11 @@ def daemon(ctx, interval, once):
                     dlog.info("cycle: %d ok, %d failed (%.1fs)",
                               stats["succeeded"], stats["failed"], elapsed)
                 if stats["succeeded"]:
-                    send_message(f"✅ Downloaded {stats['succeeded']} track(s)")
+                    # Rich per-track notification
+                    from .notifier import format_track_summary
+                    for item in stats.get("items", []):
+                        summary = format_track_summary(item)
+                        send_message(summary)
                 if stats["failed"]:
                     send_message(f"❌ {stats['failed']} download(s) failed")
                 # Check and report active downloads

@@ -104,7 +104,10 @@ class TestPickBest:
 class TestProcessQueue:
     def test_empty_queue(self, collector):
         stats = collector.process_queue()
-        assert stats == {"processed": 0, "succeeded": 0, "failed": 0}
+        assert stats["processed"] == 0
+        assert stats["succeeded"] == 0
+        assert stats["failed"] == 0
+        assert stats["items"] == []
 
     def test_search_no_results(self, collector, slskd):
         collector.queue.add("Unknown Artist - Rare Song")

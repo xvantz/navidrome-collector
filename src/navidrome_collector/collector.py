@@ -46,15 +46,18 @@ class Collector:
         self.ytdlp_fallback = ytdlp_fallback
         self.ytdlp_dir = Path(ytdlp_dir or download_dir / "ytdlp")
 
-    def process_queue(self, max_items: int = 0) -> dict[str, int]:
+    def process_queue(self, max_items: int = 0) -> dict:
         """Process pending items from the queue.
 
         1. First checks in-progress downloads (started on earlier runs)
         2. Then starts new pending items
 
-        Returns dict with counts: processed, succeeded, failed.
+        Returns dict with:
+            processed, succeeded, failed — counts
+            items — list of completed items with details for notifications
         """
-        stats = {"processed": 0, "succeeded": 0, "failed": 0}
+        from .notifier import format_track_summary
+        stats = {"processed": 0, "succeeded": 0, "failed": 0, "items": []}
         log.info("process_queue: checking %d processing item(s)...",
                  len(self.queue.list_items(status="processing")))
 
@@ -62,11 +65,17 @@ class Collector:
         for item in self.queue.list_items(status="processing"):
             clog = stage_logger(__name__, stage="download", item_id=item.id)
             clog.info("checking %s", item.query)
-            result = self._check_downloads(item)
-            if result:
-                self.queue.mark_done(item.id, str(result))
+            result_path = self._check_downloads(item)
+            if result_path:
+                self.queue.mark_done(item.id, str(result_path))
                 stats["succeeded"] += 1
-                clog.info("download complete → %s", result)
+                clog.info("download complete → %s", result_path)
+                stats["items"].append({
+                    "id": item.id,
+                    "query": item.query,
+                    "status": "done",
+                    "file_path": str(result_path),
+                })
             # if download still in progress — skip, next run will check again
             # if all failed — mark as failed and we can retry later
 
@@ -87,6 +96,12 @@ class Collector:
                     self.queue.mark_done(item.id, "")
                     stats["succeeded"] += 1
                     clog.info("done ✓")
+                    stats["items"].append({
+                        "id": item.id,
+                        "query": item.query,
+                        "status": "done",
+                        "file_path": "",
+                    })
                 elif result is None:
                     self.queue.mark_failed(item.id, "No source available")
                     stats["failed"] += 1

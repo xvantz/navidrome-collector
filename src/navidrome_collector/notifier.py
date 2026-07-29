@@ -4,6 +4,7 @@ import json as _json
 import logging
 import os
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 from .logger import stage_logger
@@ -153,3 +154,69 @@ def listen_and_handle(queue_add_fn, queue_list_fn) -> int:
             tg_log.info("command /status (%d items, chat %s)", total, chat_id)
 
     return handled
+
+
+def format_track_summary(item: dict) -> str:
+    """Build a rich Telegram notification for a completed track.
+
+    item dict: id, query, status, file_path
+    Reads the organized file's tags + enriched metadata for the summary.
+    """
+    query = item.get("query", "")
+    file_path = item.get("file_path", "")
+
+    # Try to read final tags
+    artist = ""
+    title = ""
+    album = ""
+    genre = ""
+    lines = 0
+    has_cover = False
+
+    if file_path and Path(file_path).exists():
+        try:
+            from .tagger import read_tags
+            meta = read_tags(file_path)
+            if meta:
+                artist = meta.artist or ""
+                title = meta.title or ""
+                album = meta.album or ""
+                genre = meta.genre or ""
+                # Check for lyrics
+                import mutagen
+                af = mutagen.File(file_path)
+                if af is not None:
+                    for tag_key in ("lyrics", "USLT::'eng'", "©lyr"):
+                        val = af.get(tag_key)
+                        if val:
+                            if isinstance(val, list):
+                                val = val[0]
+                            lines = len(str(val).split("\n"))
+                            break
+                # Check for cover
+                has_cover = bool(af and af.get("covr") or af.get("metadata_block_picture"))
+        except Exception:
+            pass
+
+    # Build message
+    parts = [f"✅ <b>{artist} - {title}</b>" if artist and title else f"✅ <b>{query}</b>"]
+
+    if album:
+        parts.append(f"   💿 {album}")
+    if genre or file_path:
+        extra = []
+        if genre and genre.lower() not in ("music", ""):
+            extra.append(f"🎵 {genre}")
+        if lines:
+            extra.append(f"📝 {lines} lines")
+        if has_cover:
+            extra.append("🖼 cover")
+        if extra:
+            parts.append("   " + " | ".join(extra))
+    if file_path:
+        # Show relative path from music dir
+        p = Path(file_path)
+        short = "/".join(p.parts[-3:]) if len(p.parts) >= 3 else p.name
+        parts.append(f"   📁 {short}")
+
+    return "\n".join(parts)
