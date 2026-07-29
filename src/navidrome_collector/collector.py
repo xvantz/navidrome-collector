@@ -323,11 +323,21 @@ class Collector:
         return self._find_local_path(file.username, file.filename)
 
     def _find_local_path(self, username: str, filename: str) -> Optional[Path]:
-        """Locate a downloaded file in slskd's download directory."""
-        username = username  # slskd saves under this
-        candidate = self.download_dir / username / filename.lstrip("/")
+        """Locate a downloaded file in slskd's download directory.
+
+        slskd reports filenames with Windows backslashes even on Linux,
+        but saves files with native separators. Handle both.
+        """
+        # Normalise Soulseek backslashes to native separators
+        native_name = filename.replace("\\", "/")
+        candidate = self.download_dir / username / native_name.lstrip("/")
         if candidate.exists():
             return candidate
+        # Also try with original backslashes
+        candidate_bs = self.download_dir / username / filename.lstrip("/")
+        if candidate_bs.exists():
+            return candidate_bs
+        # Last resort: search by filename only
         name = Path(filename).name
         for p in self.download_dir.rglob(name):
             return p

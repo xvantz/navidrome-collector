@@ -180,6 +180,14 @@ def _tag_file(path: Path, meta: dict) -> None:
             artist = candidate_artist
         title = candidate_title
 
+    # If parsing failed and title matches artist, use the raw YouTube title
+    # (e.g., "50 Cent" as both artist and title → "Candy Shop" was missed)
+    if title.lower() == artist.lower():
+        raw_title = meta.get("title", "")
+        if raw_title and raw_title.lower() != artist.lower():
+            title = raw_title
+            yt_log.debug("fallback title: %s → %s", yt_title, title)
+
     track_meta = TrackMeta(
         artist=artist,
         title=title or yt_title,
