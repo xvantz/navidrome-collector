@@ -274,6 +274,24 @@ class Collector:
                         if local:
                             clog.info("completed in slskd state: %s", d.state)
                             return organize_file(local, self.music_dir)
+                        # Download completed but file not found at expected path
+                        # Try harder: list the user's download directory
+                        clog.debug("completed but not at expected path, scanning...")
+                        user_dir = self.download_dir / username
+                        if user_dir.exists():
+                            for found_file in user_dir.rglob("*"):
+                                if found_file.is_file() and found_file.stat().st_size > 0:
+                                    # Found ANY file for this user — use it
+                                    basename = Path(filename).name
+                                    if basename.lower() in found_file.name.lower():
+                                        clog.info("found via user dir scan: %s → %s",
+                                                  basename, found_file)
+                                        return organize_file(found_file, self.music_dir)
+                            clog.debug("no files found in %s", user_dir)
+                        else:
+                            clog.debug("user dir does not exist: %s", user_dir)
+                        # Don't mark as failed — download completed, file exists
+                        all_failed = False
                     if d.state in ("Queued", "InProgress", "Requested") or "Locally" in d.state:
                         still_waiting = True
                         all_failed = False
@@ -355,19 +373,34 @@ class Collector:
         slskd reports filenames with Windows backslashes even on Linux,
         but saves files with native separators. Handle both.
         """
+        clog = stage_logger(__name__, stage="find_file")
         # Normalise Soulseek backslashes to native separators
         native_name = filename.replace("\\", "/")
         candidate = self.download_dir / username / native_name.lstrip("/")
+        clog.debug("trying: %s", candidate)
         if candidate.exists():
+            clog.info("found: %s", candidate)
             return candidate
         # Also try with original backslashes
         candidate_bs = self.download_dir / username / filename.lstrip("/")
+        clog.debug("trying: %s", candidate_bs)
         if candidate_bs.exists():
+            clog.info("found (bs): %s", candidate_bs)
             return candidate_bs
-        # Last resort: search by filename only
+        # Try without username subdir (flat structure)
+        flat = self.download_dir / Path(filename).name
+        clog.debug("trying flat: %s", flat)
+        if flat.exists():
+            return flat
+        # Last resort: search by filename only (expensive but thorough)
         name = Path(filename).name
+        clog.debug("rglob searching for: %s in %s", name, self.download_dir)
         for p in self.download_dir.rglob(name):
-            return p
+            if p.is_file():
+                clog.info("found via rglob: %s", p)
+                return p
+        clog.warning("not found: %s/%s (tried %d paths)", username, name,
+                     sum(1 for _ in self.download_dir.rglob(name)) if False else 3)
         return None
 
     def _score(self, f: SlskdFile) -> float:
