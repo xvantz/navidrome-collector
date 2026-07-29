@@ -130,7 +130,8 @@ class Collector:
             clog.info("trying yt-dlp: %s", query)
             with timed(clog, "yt-dlp download"):
                 from .ytdlp_downloader import search_and_download
-                yt_path, yt_info = search_and_download(query, self.ytdlp_dir)
+                yt_path, yt_info = search_and_download(query, self.ytdlp_dir,
+                                                      expected_artist=artist, expected_title=title)
             if yt_path:
                 from .matcher import score_ytdlp
                 yt_score = score_ytdlp(yt_info, yt_path)
@@ -290,10 +291,15 @@ class Collector:
             return None
         clog = stage_logger(__name__, stage="ytdlp", item_id=item.id)
         clog.info("yt-dlp download: %s", item.query)
+        from .matcher import parse_query
+        exp_artist = item.artist or parse_query(item.query)[0]
+        exp_title = item.title or parse_query(item.query)[1]
         with timed(clog, "yt-dlp download"):
             try:
                 from .ytdlp_downloader import search_and_download
-                path, _ = search_and_download(item.query, self.ytdlp_dir)
+                path, _ = search_and_download(item.query, self.ytdlp_dir,
+                                              expected_artist=exp_artist,
+                                              expected_title=exp_title)
                 return path
             except Exception as e:
                 clog.warning("yt-dlp failed: %s", e)
@@ -305,10 +311,14 @@ class Collector:
             return None
         clog = stage_logger(__name__, stage="ytdlp")
         clog.info("yt-dlp fallback for: %s", query)
+        from .matcher import parse_query
+        exp_artist, exp_title = parse_query(query)
         with timed(clog, "yt-dlp fallback"):
             try:
                 from .ytdlp_downloader import search_and_download
-                path, _ = search_and_download(query, self.ytdlp_dir)
+                path, _ = search_and_download(query, self.ytdlp_dir,
+                                              expected_artist=exp_artist,
+                                              expected_title=exp_title)
                 if path:
                     result = organize_file(path, self.music_dir)
                     if result:

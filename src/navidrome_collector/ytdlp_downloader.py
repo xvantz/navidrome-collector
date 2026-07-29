@@ -26,8 +26,18 @@ _TITLE_CLEANUP = re.compile(
 )
 
 
-def search_and_download(query: str, output_dir: str | Path, max_duration: int = 600) -> tuple[Optional[Path], Optional[dict]]:
+def search_and_download(
+    query: str,
+    output_dir: str | Path,
+    max_duration: int = 600,
+    expected_artist: str | None = None,
+    expected_title: str | None = None,
+) -> tuple[Optional[Path], Optional[dict]]:
     """Search YouTube for the best audio match, download and tag it.
+
+    Args:
+        expected_artist, expected_title: known from search query — used as
+            primary source for tags instead of parsing YouTube title.
 
     Returns:
         (filepath, info_dict) on success, (None, None) on failure.
@@ -118,7 +128,7 @@ def search_and_download(query: str, output_dir: str | Path, max_duration: int = 
 
     if metadata:
         metadata["bitrate"] = actual_bitrate
-        _tag_file(file_path, metadata)
+        _tag_file(file_path, metadata, expected_artist=expected_artist, expected_title=expected_title)
 
     yt_log.info("downloaded: %s (%.1f MB, %d kbps) in %.1fs",
                 file_path.name, size_mb, actual_bitrate // 1000, elapsed)
@@ -157,8 +167,12 @@ def _clean_title(title: str) -> str:
     return _TITLE_CLEANUP.sub("", title).strip()
 
 
-def _tag_file(path: Path, meta: dict) -> None:
-    """Write YouTube metadata as audio tags."""
+def _tag_file(path: Path, meta: dict, expected_artist: str | None = None, expected_title: str | None = None) -> None:
+    """Write YouTube metadata as audio tags.
+
+    Uses expected_artist/expected_title from the search query when available
+    as the primary source, falling back to parsing the YouTube title.
+    """
     yt_title = _clean_title(meta.get("title", ""))
     channel = meta.get("channel", "") or meta.get("uploader", "")
     date = meta.get("upload_date", "")
@@ -167,22 +181,24 @@ def _tag_file(path: Path, meta: dict) -> None:
     if not yt_title and not channel:
         return
 
-    # Parse "Artist - Title" from cleaned YouTube title
-    artist = _clean_channel(channel)
-    title = yt_title
+    # Use expected artist/title from search query (most reliable)
+    artist = expected_artist or _clean_channel(channel)
+    title = expected_title or yt_title
 
-    m = re.match(r"^(.*?)\s*[-–—|]\s*(.*)", yt_title)
-    if m:
-        candidate_artist = m.group(1).strip()
-        candidate_title = m.group(2).strip()
-        # Only use parsed artist if it's meaningfully different from channel
-        if candidate_artist.lower() != artist.lower() and len(candidate_artist) > 1:
-            artist = candidate_artist
-        title = candidate_title
+    # Parse "Artist - Title" from YouTube title if we still need artist/title
+    if not expected_artist or not expected_title:
+        m = re.match(r"^(.*?)\s*[-–—|]\s*(.*)", yt_title)
+        if m:
+            candidate_artist = m.group(1).strip()
+            candidate_title = m.group(2).strip()
+            if not expected_artist:
+                if candidate_artist.lower() != artist.lower() and len(candidate_artist) > 1:
+                    artist = candidate_artist
+            if not expected_title:
+                title = candidate_title
 
     # If parsing failed and title matches artist, use the raw YouTube title
-    # (e.g., "50 Cent" as both artist and title → "Candy Shop" was missed)
-    if title.lower() == artist.lower():
+    if title and artist and title.lower() == artist.lower():
         raw_title = meta.get("title", "")
         if raw_title and raw_title.lower() != artist.lower():
             title = raw_title
