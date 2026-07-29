@@ -266,6 +266,122 @@ def check(ctx):
         click.echo(f"Active downloads: {len(active)}")
 
 
+# ── Integration test ──────────────────────────────────────
+
+@cli.command()
+@click.option("--artist", default="Imagine Dragons", help="Artist name")
+@click.option("--title", default="Thunder", help="Track title")
+@click.option("--album", default="", help="Album (optional)")
+@click.pass_context
+def test_enrich(ctx, artist, title, album):
+    """Test enrichment pipeline with real APIs.
+
+    Creates a test audio file, runs organise + enrich, reports results.
+    Useful for verifying MusicBrainz/Cover Art/LRCLIB connectivity.
+    """
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from .tagger import TrackMeta, read_tags, write_tags
+    from .organizer import organize as organize_file
+    from .enricher import enrich, _musicbrainz_search, _fetch_cover_art, _fetch_lyrics
+
+    click.echo(f"\n🔬 Test enrichment: {artist} - {title}")
+    click.echo("=" * 50)
+
+    # Step 1: Create a test audio file with proper tags
+    click.echo("\n📄 Creating test file...")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "test_source.flac"
+        # Write minimal FLAC header
+        src.write_bytes(
+            b"fLaC"  # magic
+            b"\x00\x00\x00\x22"  # STREAMINFO
+            + b"\x10\x00\x10\x00"
+            + b"\x00\x00\x00\x00" * 6
+            + b"\x00\x01\x00\x00"
+            + b"\x00" * 24
+        )
+
+        # Write tags via mutagen
+        from mutagen.flac import FLAC
+        try:
+            af = FLAC(str(src))
+            af["artist"] = artist
+            af["title"] = title
+            if album:
+                af["album"] = album
+            af.save()
+        except Exception as e:
+            click.echo(f"⚠️  Tag write skipped: {e}")
+
+        before = read_tags(src)
+        click.echo(f"   Before: {before.artist} - {before.title} ({before.album})")
+
+        # Step 2: MusicBrainz search
+        click.echo(f"\n🔍 MusicBrainz search: {artist} - {title}...")
+        t0 = time.monotonic()
+        rec = _musicbrainz_search(artist, title)
+        elapsed = time.monotonic() - t0
+        if rec:
+            click.echo(f"   ✓ Found (in {elapsed:.1f}s)")
+            click.echo(f"     Recording ID: {rec.get('id', '?')}")
+            click.echo(f"     Album:        {rec.get('album', '?')}")
+            click.echo(f"     Year:         {rec.get('year', '?')}")
+            click.echo(f"     Genre:        {rec.get('genre', '?')}")
+            click.echo(f"     Release MBID: {rec.get('release_mbid', '?')}")
+
+            # Step 3: Cover art
+            if rec.get("release_mbid"):
+                click.echo(f"\n🖼  Cover Art Archive...")
+                t0 = time.monotonic()
+                cover = _fetch_cover_art(rec["release_mbid"])
+                elapsed = time.monotonic() - t0
+                if cover:
+                    click.echo(f"   ✓ Downloaded ({len(cover)} bytes, {elapsed:.1f}s)")
+                else:
+                    click.echo(f"   ✗ No cover available ({elapsed:.1f}s)")
+        else:
+            click.echo(f"   ✗ Not found ({elapsed:.1f}s)")
+
+        # Step 4: Lyrics
+        click.echo(f"\n📝 LRCLIB lyrics...")
+        t0 = time.monotonic()
+        lyrics = _fetch_lyrics(artist, title)
+        elapsed = time.monotonic() - t0
+        if lyrics:
+            lines = len(lyrics.split("\n"))
+            click.echo(f"   ✓ Found ({lines} lines, {elapsed:.1f}s)")
+            click.echo(f"     First line: {lyrics.split(chr(10))[0][:60]}")
+        else:
+            click.echo(f"   ✗ Not found ({elapsed:.1f}s)")
+
+        # Step 5: Full organise + enrich
+        click.echo(f"\n⚙️  Organize + Enrich...")
+        music_dir = Path(tmp) / "music"
+        music_dir.mkdir()
+        t0 = time.monotonic()
+        dest = organize_file(src, music_dir, meta=before)
+        if dest:
+            elapsed = time.monotonic() - t0
+            click.echo(f"   ✓ Organised → {dest} ({elapsed:.1f}s)")
+
+            after = read_tags(dest)
+            click.echo(f"\n📋 FINAL TAGS:")
+            click.echo(f"   Artist:  {after.artist}")
+            click.echo(f"   Title:   {after.title}")
+            click.echo(f"   Album:   {after.album}")
+            click.echo(f"   Year:    {after.year}")
+            click.echo(f"   Genre:   {after.genre}")
+            click.echo(f"   Track:   {after.track_number}")
+            click.echo(f"   has_tags: {after.has_tags}")
+        else:
+            click.echo("   ✗ Organise failed")
+
+    click.echo("\n✅ Test complete")
+
+
 def main():
     cli(auto_envvar_prefix="NVC")
 

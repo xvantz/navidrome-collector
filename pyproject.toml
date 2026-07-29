@@ -19,3 +19,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that hit real external APIs (slow, need network)",
+]
+testpaths = ["tests"]

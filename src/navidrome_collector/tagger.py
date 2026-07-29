@@ -133,6 +133,10 @@ def write_tags(path: str | Path, meta: TrackMeta, cover_data: bytes | None = Non
         log.warning("Cannot open %s for writing: %s", path, e)
         return False
 
+    # WAV files don't support direct tag assignment — skip
+    if isinstance(audio, mutagen.FileType) and type(audio).__module__ == "mutagen.wave":
+        return False
+
     if isinstance(audio, mutagen.mp4.MP4):
         audio["©ART"] = meta.artist
         audio["©nam"] = meta.title
