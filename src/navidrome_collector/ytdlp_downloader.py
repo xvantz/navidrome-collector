@@ -208,7 +208,7 @@ def _tag_file(path: Path, meta: dict, expected_artist: str | None = None, expect
         artist=artist,
         title=title or yt_title,
         album="YouTube",
-        year=year,
+        year=year,  # "" if no upload_date, avoids garbage "http" from ffmpeg
         genre="",
         track_number="",
         album_artist=artist,
@@ -216,3 +216,16 @@ def _tag_file(path: Path, meta: dict, expected_artist: str | None = None, expect
     )
 
     write_tags(str(path), track_meta)
+
+    # Clean up garbage date tags that ffmpeg may have written
+    if not year:
+        try:
+            import mutagen
+            af = mutagen.File(str(path))
+            if af is not None:
+                for garbage_key in ("date", "©day"):
+                    if garbage_key in af:
+                        del af[garbage_key]
+                af.save()
+        except Exception:
+            pass
