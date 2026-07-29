@@ -193,10 +193,24 @@ def daemon(ctx, interval, once):
                     dlog.info("cycle: %d ok, %d failed (%.1fs)",
                               stats["succeeded"], stats["failed"], elapsed)
                 if stats["succeeded"]:
-                    # Rich per-track notification
-                    from .notifier import format_track_summary
+                    # Rich per-track notification with cover
+                    from .notifier import format_track_summary, send_photo
                     for item in stats.get("items", []):
                         summary = format_track_summary(item)
+                        # Try to send cover art with caption
+                        fp = item.get("file_path", "")
+                        if fp and Path(fp).exists():
+                            try:
+                                import mutagen
+                                from .notifier import _extract_cover
+                                af = mutagen.File(fp)
+                                if af is not None:
+                                    cover_data = _extract_cover(af)
+                                    if cover_data:
+                                        send_photo(cover_data, summary)
+                                        continue
+                            except Exception:
+                                pass
                         send_message(summary)
                 if stats["failed"]:
                     send_message(f"❌ {stats['failed']} download(s) failed")
