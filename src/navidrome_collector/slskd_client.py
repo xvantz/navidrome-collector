@@ -4,6 +4,7 @@ API docs: https://github.com/slskd/slskd/blob/master/docs/api.md
 """
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,9 +158,12 @@ class SlskdClient:
             username = user_entry.get("username", "")
             for dir_entry in user_entry.get("directories", []):
                 for f in dir_entry.get("files", []):
+                    # slskd strips Soulseek @-prefixes from download filenames
+                    raw_filename: str = f.get("filename", "")
+                    clean_filename = re.sub(r"^@+", "", raw_filename)
                     d = SlskdDownload(
                         id=f.get("id", ""),
-                        filename=f.get("filename", ""),
+                        filename=clean_filename,
                         size=f.get("size", 0),
                         bytes_downloaded=f.get("bytesTransferred", 0),
                         state=f.get("state", "Unknown"),
@@ -197,7 +201,8 @@ class SlskdClient:
         start = time.monotonic()
         resp = self._session.post(url, json=json, timeout=self.timeout)
         elapsed = time.monotonic() - start
-        rpc_log.debug("POST %s → %d (%.1fs)", path, resp.status_code, elapsed)
+        body = resp.text[:500] if resp.text else ""
+        rpc_log.debug("POST %s → %d (%.1fs) body=%.200s", path, resp.status_code, elapsed, body)
         return resp
 
     def _get(self, path: str) -> requests.Response:
@@ -205,7 +210,8 @@ class SlskdClient:
         start = time.monotonic()
         resp = self._session.get(url, timeout=self.timeout)
         elapsed = time.monotonic() - start
-        rpc_log.debug("GET %s → %d (%.1fs)", path, resp.status_code, elapsed)
+        body = resp.text[:500] if resp.text else ""
+        rpc_log.debug("GET %s → %d (%.1fs) body=%.200s", path, resp.status_code, elapsed, body)
         return resp
 
     def _parse_files(self, data: Any) -> list[SlskdFile]:

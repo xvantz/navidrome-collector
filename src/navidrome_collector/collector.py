@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -266,8 +267,10 @@ class Collector:
         found_any = False
 
         for username, filename in pending:
+            # Normalise Soulseek @@ prefixes for matching with slskd download state
+            norm_fn = re.sub(r"^@+", "", filename)
             for d in downloads:
-                if d.username == username and d.filename == filename:
+                if d.username == username and d.filename == norm_fn:
                     found_any = True
                     if "Completed" in d.state and "Aborted" not in d.state:
                         local = self._find_local_path(username, filename)
@@ -372,10 +375,14 @@ class Collector:
 
         slskd reports filenames with Windows backslashes even on Linux,
         but saves files with native separators. Handle both.
+        Also strips Soulseek @username prefixes from paths.
         """
         clog = stage_logger(__name__, stage="find_file")
-        # Normalise Soulseek backslashes to native separators
-        native_name = filename.replace("\\", "/")
+        # Strip Soulseek @-prefixed share identifiers (e.g., @@loeih -> loeih)
+        clean_fn = re.sub(r"^@+", "", filename)
+
+        # Normalise backslashes to native separators
+        native_name = clean_fn.replace("\\", "/")
         candidate = self.download_dir / username / native_name.lstrip("/")
         clog.debug("trying: %s", candidate)
         if candidate.exists():
