@@ -104,8 +104,18 @@ def organize(
     clog.info("organised → %s (%.1fs)", dest, elapsed)
 
     # Post-process: enrich with cover art, lyrics, genre
-    from .enricher import enrich
-    enrich(dest, meta)
+    # Only enrich if music dir looks like a real library path (not test/temp)
+    music_path = str(Path(music_dir).resolve())
+    if not music_path.startswith("/tmp"):
+        import os
+        old_music_dir = os.environ.get("NVC_MUSIC_DIR")
+        os.environ["NVC_MUSIC_DIR"] = music_path
+        from .enricher import enrich
+        enrich(dest, meta)
+        if old_music_dir:
+            os.environ["NVC_MUSIC_DIR"] = old_music_dir
+        else:
+            del os.environ["NVC_MUSIC_DIR"]
 
     # If enrichment changed the album, move file to correct path
     if meta.album and meta.album != original_album and "Unknown" not in meta.album:

@@ -168,88 +168,73 @@ def _mb_request(path: str) -> Optional[dict]:
 def _musicbrainz_search(artist: str, title: str) -> Optional[dict]:
     """Search MusicBrainz for a recording by artist + title.
 
-    Returns dict with keys: id, release_mbid, genre (or None).
+    Evaluates ALL returned recordings and picks the one whose best
+    release has the highest type score (Album > Single > EP > Live).
     """
     query = urllib.parse.quote(f'artist:"{artist}" AND recording:"{title}"')
-    data = _mb_request(f"/recording?query={query}&limit=5")
+    data = _mb_request(f"/recording?query={query}&limit=10&inc=releases+release-groups")
     if not data or not data.get("recordings"):
         # Fallback: broader search without quotes
         query = urllib.parse.quote(f"artist:{artist} recording:{title}")
-        data = _mb_request(f"/recording?query={query}&limit=5")
+        data = _mb_request(f"/recording?query={query}&limit=10&inc=releases+release-groups")
     if not data or not data.get("recordings"):
         return None
 
-    recording = data["recordings"][0]
-    result: dict[str, Any] = {
-        "id": recording.get("id"),
-        "release_mbid": None,
-        "genre": None,
-        "album": None,
-        "year": None,
+    # Type preference (higher = better)
+    _TYPE_SCORE = {
+        "album": 10, "single": 6, "ep": 5, "mixtape": 3,
+        "compilation": 2, "soundtrack": 2, "live": 1, "broadcast": 0,
+    }
+    # Secondary type penalties (subtracted from primary score)
+    _SECONDARY_PENALTY = {
+        "compilation": -5, "live": -5, "soundtrack": -4,
+        "mixtape": -2, "remix": -3, "dj-mix": -3,
     }
 
-    # Get detailed info with releases and genres
-    rid = recording.get("id", "")
+    best_rec: Optional[dict] = None
+    best_score = -1
+
+    for rec in data["recordings"]:
+        rec_id = rec.get("id", "")
+        for rel in rec.get("releases", []):
+            if (rel.get("status") or "").lower() not in ("official", ""):
+                continue
+            rg = rel.get("release-group", {}) or {}
+            ptype = (rg.get("primary-type") or "").lower()
+            score = _TYPE_SCORE.get(ptype, 0)
+            # Penalise secondary types (e.g., Album+Compilation → -5)
+            for stype in rg.get("secondary-types", []):
+                score += _SECONDARY_PENALTY.get(stype.lower(), 0)
+            if score > best_score:
+                best_score = score
+                best_rec = {
+                    "id": rec_id,
+                    "release_mbid": rel.get("id"),
+                    "genre": None,
+                    "album": rel.get("title", ""),
+                    "year": (rel.get("date") or "")[:4],
+                    "_type": ptype,
+                }
+                enrich_log.debug("  candidate: %s — %s (%s) [type=%s, score=%d]",
+                                 rec.get("title", "?"), rel.get("title", "?"),
+                                 (rel.get("date") or "")[:4], ptype, score)
+
+    if not best_rec:
+        return None
+
+    # Fetch genre from recording detail (1 extra API call for the best match)
+    rid = best_rec["id"]
     if rid:
-        detail = _mb_request(f"/recording/{rid}?inc=releases+artists+genres+tags+release-groups")
+        detail = _mb_request(f"/recording/{rid}?inc=genres+tags")
         if detail:
-            enrich_log.debug("MusicBrainz detail: title=%s, %d release(s), %d tag(s)",
-                             detail.get("title", "?"),
-                             len(detail.get("releases", [])),
-                             len(detail.get("tags", []) + detail.get("genres", [])))
-
-            # Pick the best official release: prefer Album > Single/EP > Live/Compilation
-            releases = detail.get("releases", [])
-            scored = []
-            for rel in releases:
-                status = (rel.get("status") or "").lower()
-                if status not in ("official", ""):
-                    continue
-                rg = rel.get("release-group", {}) or {}
-                primary_type = (rg.get("primary-type") or "").lower()
-                # Score: higher = preferred
-                type_score = {
-                    "album": 10,
-                    "single": 6,
-                    "ep": 5,
-                    "mixtape": 3,
-                    "compilation": 2,
-                    "live": 1,
-                    "broadcast": 0,
-                    "soundtrack": 2,
-                }.get(primary_type, 0)
-                scored.append((type_score, rel))
-
-            scored.sort(key=lambda x: x[0], reverse=True)
-
-            if scored:
-                best = scored[0][1]
-                result["release_mbid"] = best.get("id")
-                result["album"] = best.get("title", "")
-                result["year"] = (best.get("date") or "")[:4]
-                rg_name = (best.get("release-group", {}) or {}).get("primary-type", "?")
-                enrich_log.debug("  picked: %s (%s, %s) [type=%s]",
-                                 result["album"], result["release_mbid"],
-                                 result["year"] or "?", rg_name)
-            elif releases:
-                # Fallback: first release regardless of status
-                result["release_mbid"] = releases[0].get("id")
-                result["album"] = releases[0].get("title", "")
-                result["year"] = (releases[0].get("date") or "")[:4]
-                enrich_log.debug("  fallback release: %s (%s, %s)",
-                                 result["album"], result["release_mbid"], result["year"] or "?")
-
-            # Genre — try genres field first (MB API v2), then tags
-            genre_sources = (
-                detail.get("genres", []) +
-                detail.get("tags", [])
-            )
+            genre_sources = detail.get("genres", []) + detail.get("tags", [])
             if genre_sources:
                 genre_sources.sort(key=lambda t: t.get("count", 0), reverse=True)
-                result["genre"] = genre_sources[0].get("name", "").capitalize()
-                enrich_log.debug("  genre: %s", result["genre"])
+                best_rec["genre"] = genre_sources[0].get("name", "").capitalize()
 
-    return result
+    enrich_log.info("MusicBrainz best: %s — %s (%s) [type=%s]",
+                    artist, best_rec["album"], best_rec.get("year", "?"), best_rec.get("_type", "?"))
+    return best_rec
 
 
 # ── Cover Art Archive ─────────────────────────────────────
