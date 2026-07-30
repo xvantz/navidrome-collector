@@ -47,6 +47,8 @@ def organize(
     if meta is None:
         meta = read_tags(source)
 
+    original_album = meta.album or ""
+
     if not meta.has_tags:
         log.info("No tags found for %s, trying AcoustID fingerprint...", source)
         fp_meta = fingerprint(source)
@@ -104,5 +106,26 @@ def organize(
     # Post-process: enrich with cover art, lyrics, genre
     from .enricher import enrich
     enrich(dest, meta)
+
+    # If enrichment changed the album, move file to correct path
+    if meta.album and meta.album != original_album and "Unknown" not in meta.album:
+        org_artist = sanitize(meta.artist or "Unknown")
+        org_album = sanitize(meta.album or "Unknown Album")
+        if meta.year and meta.year not in org_album:
+            org_album = f"{org_album} ({meta.year})"
+        org_track = meta.track_number or ""
+        org_title = sanitize(meta.title or source.stem)
+        org_ext = dest.suffix.lower()
+        org_name = f"{int(org_track):02d} - {org_title}{org_ext}" if org_track else f"{org_title}{org_ext}"
+        correct_dest = Path(music_dir) / org_artist / org_album / org_name
+
+        if correct_dest != dest:
+            correct_dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(dest), str(correct_dest))
+                clog.info("re-organised → %s", correct_dest)
+                return correct_dest
+            except (OSError, shutil.Error) as e:
+                log.warning("failed to re-organise: %s", e)
 
     return dest

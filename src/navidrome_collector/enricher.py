@@ -191,25 +191,48 @@ def _musicbrainz_search(artist: str, title: str) -> Optional[dict]:
     # Get detailed info with releases and genres
     rid = recording.get("id", "")
     if rid:
-        detail = _mb_request(f"/recording/{rid}?inc=releases+artists+genres+tags")
+        detail = _mb_request(f"/recording/{rid}?inc=releases+artists+genres+tags+release-groups")
         if detail:
             enrich_log.debug("MusicBrainz detail: title=%s, %d release(s), %d tag(s)",
                              detail.get("title", "?"),
                              len(detail.get("releases", [])),
                              len(detail.get("tags", []) + detail.get("genres", [])))
 
-            # Pick the first official release (case-insensitive) and extract album/year
+            # Pick the best official release: prefer Album > Single/EP > Live/Compilation
             releases = detail.get("releases", [])
+            scored = []
             for rel in releases:
                 status = (rel.get("status") or "").lower()
-                if status in ("official",):
-                    result["release_mbid"] = rel.get("id")
-                    result["album"] = rel.get("title", "")
-                    result["year"] = (rel.get("date") or "")[:4]
-                    enrich_log.debug("  official release: %s (%s, %s)",
-                                     result["album"], result["release_mbid"], result["year"] or "?")
-                    break
-            if not result["release_mbid"] and releases:
+                if status not in ("official", ""):
+                    continue
+                rg = rel.get("release-group", {}) or {}
+                primary_type = (rg.get("primary-type") or "").lower()
+                # Score: higher = preferred
+                type_score = {
+                    "album": 10,
+                    "single": 6,
+                    "ep": 5,
+                    "mixtape": 3,
+                    "compilation": 2,
+                    "live": 1,
+                    "broadcast": 0,
+                    "soundtrack": 2,
+                }.get(primary_type, 0)
+                scored.append((type_score, rel))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            if scored:
+                best = scored[0][1]
+                result["release_mbid"] = best.get("id")
+                result["album"] = best.get("title", "")
+                result["year"] = (best.get("date") or "")[:4]
+                rg_name = (best.get("release-group", {}) or {}).get("primary-type", "?")
+                enrich_log.debug("  picked: %s (%s, %s) [type=%s]",
+                                 result["album"], result["release_mbid"],
+                                 result["year"] or "?", rg_name)
+            elif releases:
+                # Fallback: first release regardless of status
                 result["release_mbid"] = releases[0].get("id")
                 result["album"] = releases[0].get("title", "")
                 result["year"] = (releases[0].get("date") or "")[:4]
