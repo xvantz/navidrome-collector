@@ -129,12 +129,16 @@ class SlskdClient:
         resp = self._post(f"/transfers/downloads/{username}", [payload])
         if resp.status_code in (200, 201):
             data = resp.json() if resp.content else {}
-            if isinstance(data, list) and data:
+            dl_id = None
+            # slskd v1 returns {"enqueued": [{"id": "...", ...}]}
+            if isinstance(data, dict):
+                enqueued = data.get("enqueued", [])
+                if enqueued and isinstance(enqueued, list):
+                    dl_id = enqueued[0].get("id") if isinstance(enqueued[0], dict) else None
+                if not dl_id:
+                    dl_id = data.get("id")
+            elif isinstance(data, list) and data:
                 dl_id = data[0].get("id") if isinstance(data[0], dict) else None
-            elif isinstance(data, dict):
-                dl_id = data.get("id")
-            else:
-                dl_id = None
             # 200/201 = accepted, even without id in body
             dl_id = dl_id or f"{username}|{filename}"
             rpc_log.info("enqueue %s/%s → id=%s", username, Path(filename).name, dl_id)
